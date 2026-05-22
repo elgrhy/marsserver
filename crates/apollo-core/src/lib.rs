@@ -37,6 +37,10 @@ pub mod scheduler;
 /// Provider-oriented orchestration: blueprints, agent groups, workflow DAGs.
 pub mod orchestration;
 
+/// Automatic architecture selection — chooses Deterministic / SingleAgent / MultiAgent
+/// from DAG topology, governance constraints, error tolerance, and tool diversity.
+pub mod arch_selector;
+
 #[cfg(test)]
 mod tests;
 

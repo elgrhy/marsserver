@@ -986,3 +986,286 @@ mod orchestration_tests {
         assert_eq!(ready, vec!["a"], "Only root step should be ready initially");
     }
 }
+
+#[cfg(test)]
+mod arch_selector_tests {
+    use crate::arch_selector::*;
+    use crate::orchestration::{WorkflowDef, WorkflowStep};
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn temp() -> TempDir { tempfile::tempdir().unwrap() }
+
+    fn make_step(id: &str, agent: &str, deps: Vec<&str>, optional: bool, timeout: Option<u64>) -> WorkflowStep {
+        WorkflowStep {
+            step_id:      id.to_string(),
+            name:         id.to_string(),
+            agent_id:     agent.to_string(),
+            depends_on:   deps.into_iter().map(|s| s.to_string()).collect(),
+            env:          HashMap::new(),
+            optional,
+            timeout_secs: timeout,
+        }
+    }
+
+    fn make_def(tenant: &str, steps: Vec<WorkflowStep>) -> WorkflowDef {
+        WorkflowDef {
+            id:          "wf-test".to_string(),
+            name:        "Test Workflow".to_string(),
+            description: String::new(),
+            tenant_id:   tenant.to_string(),
+            steps,
+            created_at:  0,
+            updated_at:  0,
+        }
+    }
+
+    // ── analyse_dag tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_empty_workflow_gives_default_metrics() {
+        let def = make_def("t1", vec![]);
+        let m = analyse_dag(&def);
+        assert_eq!(m.step_count, 0);
+        assert_eq!(m.distinct_agents, 0);
+        assert_eq!(m.max_parallel_width, 0);
+    }
+
+    #[test]
+    fn test_single_step_dag() {
+        let def = make_def("t1", vec![make_step("s1", "agent-a", vec![], false, Some(60))]);
+        let m = analyse_dag(&def);
+        assert_eq!(m.step_count, 1);
+        assert_eq!(m.distinct_agents, 1);
+        assert_eq!(m.max_parallel_width, 1);
+        assert_eq!(m.critical_path_length, 1);
+        assert_eq!(m.critical_path, vec!["s1"]);
+        assert!(!m.has_branching);
+        assert!(!m.has_fan_in);
+        assert!(m.has_timeout_constraints);
+        assert_eq!(m.optional_ratio, 0.0);
+    }
+
+    #[test]
+    fn test_linear_chain_dag() {
+        // a → b → c
+        let def = make_def("t1", vec![
+            make_step("a", "agent", vec![], false, None),
+            make_step("b", "agent", vec!["a"], false, None),
+            make_step("c", "agent", vec!["b"], false, None),
+        ]);
+        let m = analyse_dag(&def);
+        assert_eq!(m.step_count, 3);
+        assert_eq!(m.max_parallel_width, 1);   // no parallelism
+        assert_eq!(m.critical_path_length, 3);
+        assert!(!m.has_branching);
+        assert!(!m.has_fan_in);
+    }
+
+    #[test]
+    fn test_parallel_dag_width() {
+        // root → [a, b, c] → join
+        let def = make_def("t1", vec![
+            make_step("root",  "ag", vec![], false, None),
+            make_step("a",     "ag", vec!["root"], false, None),
+            make_step("b",     "ag", vec!["root"], false, None),
+            make_step("c",     "ag", vec!["root"], false, None),
+            make_step("join",  "ag", vec!["a", "b", "c"], false, None),
+        ]);
+        let m = analyse_dag(&def);
+        assert_eq!(m.step_count, 5);
+        assert_eq!(m.max_parallel_width, 3, "Three steps at level 1 should give width 3");
+        assert!(m.has_branching, "root has 3 successors");
+        assert!(m.has_fan_in,    "join has 3 predecessors");
+        assert_eq!(m.critical_path_length, 3, "root → a|b|c → join");
+    }
+
+    #[test]
+    fn test_distinct_agents_count() {
+        let def = make_def("t1", vec![
+            make_step("s1", "scraper",    vec![], false, None),
+            make_step("s2", "analyzer",   vec!["s1"], false, None),
+            make_step("s3", "reporter",   vec!["s2"], false, None),
+            make_step("s4", "scraper",    vec!["s3"], false, None), // reuse
+        ]);
+        let m = analyse_dag(&def);
+        assert_eq!(m.distinct_agents, 3); // scraper, analyzer, reporter
+    }
+
+    #[test]
+    fn test_optional_ratio() {
+        let def = make_def("t1", vec![
+            make_step("s1", "a", vec![], false, None),
+            make_step("s2", "a", vec![], true,  None),
+            make_step("s3", "a", vec![], true,  None),
+            make_step("s4", "a", vec![], false, None),
+        ]);
+        let m = analyse_dag(&def);
+        assert!((m.optional_ratio - 0.5).abs() < 1e-6, "2/4 optional = 0.5");
+    }
+
+    // ── score / architecture selection tests ──────────────────────────────────
+
+    #[test]
+    fn test_single_step_selects_deterministic() {
+        let dir = temp();
+        let def = make_def("t1", vec![
+            make_step("s1", "agent-a", vec![], false, Some(30)),
+        ]);
+        let selector = ArchitectureSelector::new(dir.path().to_path_buf());
+        let decision  = selector.select(&def, "us-east-1");
+
+        assert_eq!(decision.architecture, ArchitectureType::Deterministic,
+            "Single step with timeout should always be deterministic");
+        assert!(decision.confidence > 0.4, "Confidence should be meaningful");
+        assert!(!decision.reasoning.is_empty());
+    }
+
+    #[test]
+    fn test_multi_agent_parallel_selects_multiagent() {
+        let dir = temp();
+        let def = make_def("t1", vec![
+            make_step("fetch",    "scraper",  vec![], true, None),
+            make_step("analyze",  "llm",      vec![], true, None),
+            make_step("store",    "db-agent", vec![], true, None),
+            make_step("notify",   "mailer",   vec!["fetch", "analyze", "store"], false, None),
+        ]);
+        let selector = ArchitectureSelector::new(dir.path().to_path_buf());
+        let decision  = selector.select(&def, "us-east-1");
+
+        assert_eq!(decision.architecture, ArchitectureType::MultiAgent,
+            "4 distinct agents with parallelism should select multi-agent");
+        assert_eq!(decision.config.max_concurrency, 3);
+        assert!(!decision.config.fail_fast);
+    }
+
+    #[test]
+    fn test_single_agent_multi_step_selects_singleagent() {
+        let dir = temp();
+        // 3-step sequential chain, all same agent, no parallelism
+        let def = make_def("t1", vec![
+            make_step("step1", "worker", vec![], false, None),
+            make_step("step2", "worker", vec!["step1"], false, None),
+            make_step("step3", "worker", vec!["step2"], false, None),
+        ]);
+        let selector = ArchitectureSelector::new(dir.path().to_path_buf());
+        let decision  = selector.select(&def, "us-east-1");
+
+        assert_eq!(decision.architecture, ArchitectureType::SingleAgent,
+            "Same agent, 3 sequential steps should be single-agent");
+        assert_eq!(decision.config.max_concurrency, 1);
+    }
+
+    #[test]
+    fn test_config_critical_path_populated() {
+        let dir = temp();
+        let def = make_def("t1", vec![
+            make_step("a", "agent", vec![], false, None),
+            make_step("b", "agent", vec!["a"], false, None),
+            make_step("c", "agent", vec!["b"], false, None),
+        ]);
+        let selector = ArchitectureSelector::new(dir.path().to_path_buf());
+        let decision  = selector.select(&def, "us-east-1");
+
+        assert_eq!(decision.config.critical_path.len(), 3);
+        assert_eq!(decision.config.phase_count, 3); // 3 topological levels
+    }
+
+    #[test]
+    fn test_suggested_timeout_sums_critical_path() {
+        let dir = temp();
+        let def = make_def("t1", vec![
+            make_step("a", "agent", vec![], false, Some(100)),
+            make_step("b", "agent", vec!["a"], false, Some(200)),
+        ]);
+        let selector = ArchitectureSelector::new(dir.path().to_path_buf());
+        let decision  = selector.select(&def, "us-east-1");
+
+        assert_eq!(decision.config.suggested_total_timeout_secs, Some(300));
+    }
+
+    #[test]
+    fn test_governance_skip_candidates_populated() {
+        use crate::policy::{TenantPolicy, save_policy};
+        let dir = temp();
+        let base = dir.path();
+
+        // Block "risky-agent" via policy
+        let policy = TenantPolicy {
+            tenant_id:     "t1".to_string(),
+            blocked_agents: vec!["risky-agent".to_string()],
+            ..Default::default()
+        };
+        save_policy(base, &policy).unwrap();
+
+        // Workflow with a risky but optional step
+        let def = make_def("t1", vec![
+            make_step("safe",  "safe-agent",  vec![], false, None),
+            make_step("risky", "risky-agent", vec![], true,  None), // optional
+        ]);
+        let selector = ArchitectureSelector::new(base.to_path_buf());
+        let decision  = selector.select(&def, "us-east-1");
+
+        assert!(!decision.governance.all_agents_allowed);
+        assert!(decision.governance.blocked_agents.contains(&"risky-agent".to_string()));
+        assert!(decision.config.governance_skip_candidates.contains(&"risky".to_string()),
+            "Optional blocked step should be a skip candidate");
+    }
+
+    // ── quick_classify tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_quick_classify_single_tool_sequential() {
+        let req = QuickClassifyRequest {
+            tenant_id:        "t1".to_string(),
+            tool_count:       1,
+            parallel_branches: 0,
+            error_tolerance:  0,
+            governance_strict: false,
+        };
+        let resp = quick_classify(&req);
+        assert_eq!(resp.architecture, ArchitectureType::Deterministic);
+        assert!(!resp.one_line.is_empty());
+    }
+
+    #[test]
+    fn test_quick_classify_many_tools_parallel() {
+        let req = QuickClassifyRequest {
+            tenant_id:        "t1".to_string(),
+            tool_count:       6,
+            parallel_branches: 4,
+            error_tolerance:  3,
+            governance_strict: false,
+        };
+        let resp = quick_classify(&req);
+        assert_eq!(resp.architecture, ArchitectureType::MultiAgent);
+        assert!(resp.confidence > 0.3);
+    }
+
+    #[test]
+    fn test_quick_classify_two_tools_single_branch() {
+        let req = QuickClassifyRequest {
+            tenant_id:        "t1".to_string(),
+            tool_count:       2,
+            parallel_branches: 1,
+            error_tolerance:  1,
+            governance_strict: false,
+        };
+        let resp = quick_classify(&req);
+        assert_eq!(resp.architecture, ArchitectureType::SingleAgent);
+    }
+
+    #[test]
+    fn test_quick_classify_strict_governance_nudges_deterministic() {
+        let req = QuickClassifyRequest {
+            tenant_id:        "t1".to_string(),
+            tool_count:       1,
+            parallel_branches: 0,
+            error_tolerance:  0,
+            governance_strict: true,
+        };
+        let resp = quick_classify(&req);
+        // With governance_strict + single tool + sequential → deterministic
+        assert_eq!(resp.architecture, ArchitectureType::Deterministic);
+    }
+}

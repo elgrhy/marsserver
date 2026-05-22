@@ -465,3 +465,42 @@ volumes:
 10. Route model calls: `POST /models/route` — cost/latency/policy-aware selection
 11. Schedule agents: `POST /schedule` — cron, interval, or one-shot
 12. Deploy at scale: blueprints + groups + workflows for complex multi-agent deployments
+13. Auto-select architecture: `POST /architecture/select` / `POST /architecture/classify` — decision engine picks Deterministic / SingleAgent / MultiAgent
+
+## Architecture Selection API
+
+The engine analyses a workflow's DAG topology, governance constraints, error tolerance, and agent diversity to choose the optimal execution model before a workflow runs.
+
+```bash
+# Analyse an inline WorkflowDef — returns full ArchitectureDecision with scores, reasoning, config
+curl -X POST http://localhost:8080/architecture/select \
+  -H "X-Apollo-Key: KEY" -H "Content-Type: application/json" \
+  -d '{"id":"wf1","name":"ETL","description":"","tenant_id":"user_1","steps":[
+    {"step_id":"fetch","name":"Fetch","agent_id":"scraper","depends_on":[],"env":{},"optional":false,"timeout_secs":60},
+    {"step_id":"analyze","name":"Analyze","agent_id":"llm","depends_on":[],"env":{},"optional":true,"timeout_secs":null},
+    {"step_id":"store","name":"Store","agent_id":"db-agent","depends_on":["fetch","analyze"],"env":{},"optional":false,"timeout_secs":null}
+  ],"created_at":0,"updated_at":0}'
+
+# Analyse a saved workflow by ID
+curl -H "X-Apollo-Key: KEY" http://localhost:8080/architecture/select/wf-abc123
+
+# Quick heuristic without a full WorkflowDef
+curl -X POST http://localhost:8080/architecture/classify \
+  -H "X-Apollo-Key: KEY" -H "Content-Type: application/json" \
+  -d '{"tenant_id":"user_1","tool_count":4,"parallel_branches":2,"error_tolerance":2,"governance_strict":false}'
+```
+
+Decision output includes:
+- `architecture` — `deterministic` | `single_agent` | `multi_agent`
+- `confidence` — 0.0–1.0, winner score / total score
+- `scores` — raw 0-100 scores for all three
+- `dag` — step count, distinct agents, max parallel width, critical path
+- `governance` — blocked agents, strictness score, data residency status
+- `reasoning` — top 6 human-readable decision reasons, most decisive first
+- `config` — max_concurrency, fail_fast, retry_eligible_steps, parallel_groups, governance_skip_candidates, suggested_total_timeout_secs
+
+## Deferred Roadmap (build next)
+
+- **K8s operator / Helm chart** — `deploy/helm/` for enterprise Kubernetes deployments
+- **Dashboard UI** — web interface for fleet health, per-tenant usage, agent catalog, live logs
+- **Python / Node / Go SDK** — thin client wrappers for `apollo.run_agent(tenant, agent)`

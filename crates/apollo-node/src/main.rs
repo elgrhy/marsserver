@@ -9,6 +9,7 @@
 //!   • Model routing  (/models)
 //!   • Scheduler      (/schedule)
 //!   • Orchestration  (/blueprints, /groups, /workflows)
+//!   • Arch Selector  (/architecture)
 
 use clap::{Parser, Subcommand};
 use anyhow::{Result, anyhow};
@@ -80,6 +81,7 @@ use apollo_core::orchestration::{
     create_workflow_run, save_workflow_run, load_workflow_run, list_workflow_runs,
     ready_steps_with_def,
 };
+use apollo_core::arch_selector::{ArchitectureSelector, QuickClassifyRequest, quick_classify};
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -289,6 +291,7 @@ async fn handle_command(command: Commands) -> Result<()> {
             println!("[OK] Model Router Active");
             println!("[OK] Scheduler Active");
             println!("[OK] Orchestration APIs Active");
+            println!("[OK] Architecture Selector Active");
             println!("[OK] Runtimes Detected: {}", profile.runtimes.join(", "));
             println!("STATUS: PRODUCTION READY  [Apollo v2.0]");
             Ok(())
@@ -558,6 +561,11 @@ async fn run_api_server(
         .route("/workflows/:id/run",                      post(handle_workflows_run))
         .route("/workflows/:id/runs",                     get(handle_workflows_runs_list))
         .route("/workflows/runs/:run_id",                 get(handle_workflows_run_get))
+
+        // ── v2.0: Architecture Selection ─────────────────────────────────────
+        .route("/architecture/select",                    post(handle_architecture_select))
+        .route("/architecture/select/:workflow_id",       get(handle_architecture_select_saved))
+        .route("/architecture/classify",                  post(handle_architecture_classify))
 
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state);
@@ -1451,6 +1459,44 @@ async fn handle_workflows_run_get(
         Some(r) => Json(serde_json::to_value(r).unwrap_or_default()).into_response(),
         None    => (StatusCode::NOT_FOUND, err_json("Workflow run not found")).into_response(),
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v2.0: ARCHITECTURE SELECTION HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// POST /architecture/select — analyse an inline WorkflowDef and return a decision.
+async fn handle_architecture_select(
+    State(s):    State<AppState>,
+    Json(def):   Json<WorkflowDef>,
+) -> impl IntoResponse {
+    let selector = ArchitectureSelector::new(s.base_dir.clone());
+    let decision  = selector.select(&def, &s.config.region);
+    (StatusCode::OK, Json(serde_json::to_value(&decision).unwrap_or_default())).into_response()
+}
+
+/// GET /architecture/select/:workflow_id — analyse a saved workflow definition.
+async fn handle_architecture_select_saved(
+    State(s):             State<AppState>,
+    AxumPath(workflow_id): AxumPath<String>,
+) -> impl IntoResponse {
+    match load_workflow_def(&s.base_dir, &workflow_id) {
+        None      => (StatusCode::NOT_FOUND, err_json("Workflow definition not found")).into_response(),
+        Some(def) => {
+            let selector = ArchitectureSelector::new(s.base_dir.clone());
+            let decision  = selector.select(&def, &s.config.region);
+            (StatusCode::OK, Json(serde_json::to_value(&decision).unwrap_or_default())).into_response()
+        }
+    }
+}
+
+/// POST /architecture/classify — lightweight heuristic classification without a full WorkflowDef.
+async fn handle_architecture_classify(
+    State(_s):  State<AppState>,
+    Json(req):  Json<QuickClassifyRequest>,
+) -> impl IntoResponse {
+    let resp = quick_classify(&req);
+    (StatusCode::OK, Json(serde_json::to_value(&resp).unwrap_or_default())).into_response()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
