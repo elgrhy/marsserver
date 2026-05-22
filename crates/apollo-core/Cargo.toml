@@ -23,3 +23,5 @@ tar        = { workspace = true }
 zip        = { workspace = true }
 tempfile   = { workspace = true }
 semver     = { workspace = true }
+uuid       = { workspace = true }
+rand       = { workspace = true }

@@ -24,3 +24,4 @@ axum-server  = { workspace = true }
 tower        = { workspace = true }
 tower-http   = { workspace = true }
 jsonwebtoken = { workspace = true }
+uuid         = { workspace = true }
