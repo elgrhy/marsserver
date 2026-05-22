@@ -150,6 +150,63 @@ STATUS: PRODUCTION READY  [Apollo v2.0]
 
 ---
 
+## CLI — Full Platform Coverage
+
+The `apollo` binary is a complete operator CLI for the entire v2.0 platform — not just agent management. Every REST endpoint has a typed subcommand.
+
+```
+apollo [--node URL] [--key KEY] <command>
+
+  doctor                     12-point system validation
+  demo [--quick]             Offline guided tour of all platform modules
+  guide [topic]              Built-in docs (quick-start | concepts | observability |
+                             governance | health | memory | routing | scheduler |
+                             orchestration | arch-selection | api)
+  dashboard [--refresh N]    Live auto-refresh terminal fleet view (htop-style)
+
+  ── Agent Management (v1.x) ──────────────────────────────────────────
+  agent add / run / stop / list / rollback / remove
+
+  ── v2.0 Platform ────────────────────────────────────────────────────
+  traces   list / get / tokens
+  policy   get / set / delete / compliance
+  health   agent / tenant / fleet
+  memory   get / put / delete / list / search / clear / stats
+  models   list / add / remove / route / usage
+  schedule list / create / get / delete / run / history
+  blueprint list / create / get / delete / deploy
+  group    list / create / get / delete / run / stop
+  workflow  list / create / get / delete / run / runs / status / arch
+  arch     select / classify
+  usage    list / get / reset
+```
+
+Global flags apply to all v2.0 commands:
+```
+--node   http://localhost:8080   (env: APOLLO_NODE)
+--key    apollo-dev-secret       (env: APOLLO_KEY)
+```
+
+**Run offline with no node:**
+```bash
+apollo demo --quick                   # 60-second highlights
+apollo demo                           # full 10-module guided walkthrough
+apollo guide quick-start              # installation walkthrough
+apollo guide api                      # complete REST reference
+```
+
+**Live terminal dashboard:**
+```bash
+apollo dashboard --key my-secret      # redraws every 5s; [q] quit, [r] refresh
+```
+
+**Interactive shell** (no arguments):
+```bash
+apollo                                # shows banner + help menu; type commands directly
+```
+
+---
+
 ## Quick Start
 
 ```bash
@@ -517,15 +574,33 @@ WantedBy=multi-user.target
 
 ---
 
-## Deferred Roadmap (v3.0)
+## Provider & UI Integration
 
-- **Kubernetes operator / Helm chart** — `deploy/helm/` for enterprise K8s deployments
-- **Dashboard UI** — web interface for fleet health, per-tenant usage, live logs, trace timeline
-- **Python / Node / Go SDK** — `apollo.run_agent(tenant, agent)` thin client libraries
-- **Parallel workflow execution** — concurrent DAG step dispatch within a workflow run
-- **Real-time alerting** — health score drops → PagerDuty / Slack / email
-- **Vector storage** — embedding-based memory search (Qdrant / pgvector / HNSW)
+Apollo is **API-first**. The REST API is the integration surface for every external system — no proprietary SDK required. Any provider, cloud platform, or enterprise tool can connect:
+
+| Integration type | How |
+|---|---|
+| **AWS / GCP / Azure control plane** | Call the REST API from your VPC; use `X-Apollo-Key` or HS256-JWT |
+| **Custom web dashboard** | Build any UI that calls the same REST endpoints the CLI uses |
+| **Billing system** | `GET /usage/:tenant` + `GET /traces/:tenant/tokens` — CPU, memory, LLM costs |
+| **Alerting / PagerDuty** | `GET /health/fleet/summary` → trigger on degraded/critical counts |
+| **Workflow orchestrator** | `POST /workflows/:id/run` → poll `GET /workflows/runs/:run_id` |
+| **Kubernetes / Helm** | Deploy `apollo node start` as a `Deployment`; expose with `Service` |
+| **Service mesh** | Node speaks standard HTTPS/TLS; plug in Istio/Envoy like any service |
+
+The Apollo CLI itself is built on top of the same REST API — there's no private interface. Anything the CLI does, any provider dashboard can do identically.
 
 ---
 
-*Apollo v2.0 — Observability · Governance · Health · Memory · Model Routing · Scheduler · Orchestration · Architecture Selection*
+## Deferred Roadmap (v3.0)
+
+- **Kubernetes operator / Helm chart** — `deploy/helm/` for enterprise K8s deployments
+- **Official Python / Node / Go SDK** — `apollo.run_agent(tenant, agent)` thin client libraries
+- **Parallel workflow execution** — concurrent DAG step dispatch within a single workflow run
+- **Real-time alerting** — health score drops / budget exhaustion → PagerDuty / Slack / email
+- **Vector storage** — embedding-based memory search (Qdrant / pgvector / HNSW)
+- **Agent-to-agent messaging** — runtime pub/sub bus between running agents
+
+---
+
+*Apollo v2.0 — CLI · Dashboard · Demo · Guide · Observability · Governance · Health · Memory · Model Routing · Scheduler · Orchestration · Architecture Selection*

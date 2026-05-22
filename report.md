@@ -173,6 +173,70 @@ The final v2.0 module — a decision engine that analyses a workflow before exec
 
 ---
 
+## Advanced CLI (v2.0)
+
+The final v2.0 deliverable — the `apollo` binary is now a complete operator platform, not just an agent manager. Every REST endpoint exposed by the node has a corresponding typed CLI subcommand.
+
+### New files (3,483 lines)
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| `src/fmt.rs` | ~220 | ANSI-aware colored output, tables, health bars, banners |
+| `src/client.rs` | ~310 | `NodeClient` — typed blocking REST wrapper for all 73 endpoints |
+| `src/commands/dashboard.rs` | ~250 | Live auto-refresh terminal dashboard (crossterm raw mode) |
+| `src/commands/traces.rs` | ~90 | `apollo traces list/get/tokens` |
+| `src/commands/policy.rs` | ~125 | `apollo policy get/set/delete/compliance` |
+| `src/commands/health_cmd.rs` | ~80 | `apollo health agent/tenant/fleet` |
+| `src/commands/memory_cmd.rs` | ~130 | `apollo memory get/put/delete/list/search/clear/stats` |
+| `src/commands/models.rs` | ~145 | `apollo models list/add/remove/route/usage` |
+| `src/commands/schedule_cmd.rs` | ~145 | `apollo schedule list/create/get/delete/run/history` |
+| `src/commands/orchestration.rs` | ~300 | `apollo blueprint/group/workflow` — all subcommands |
+| `src/commands/arch_cmd.rs` | ~115 | `apollo arch select/classify` |
+| `src/commands/usage_cmd.rs` | ~60 | `apollo usage list/get/reset` |
+| `src/commands/demo.rs` | ~290 | Fully offline 10-module guided platform demo |
+| `src/commands/guide.rs` | ~430 | Built-in documentation for 11 topics |
+
+### New command surface
+
+```
+apollo [--node URL] [--key KEY]
+  doctor                  12-point check (now colored green/cyan)
+  demo [--quick]          Offline walkthrough — no node required
+  guide [topic]           Built-in docs; interactive menu or direct topic
+  dashboard [--refresh N] Live fleet view — fleet+health panes, agents, jobs
+  traces   list / get / tokens
+  policy   get / set / delete / compliance
+  health   agent / tenant / fleet
+  memory   get / put / delete / list / search / clear / stats
+  models   list / add / remove / route / usage
+  schedule list / create / get / delete / run / history
+  blueprint list / create / get / delete / deploy
+  group    list / create / get / delete / run / stop
+  workflow  list / create / get / delete / run / runs / status / arch
+  arch     select / classify
+  usage    list / get / reset
+```
+
+### Dashboard
+`apollo dashboard` enters a crossterm alternate screen with raw mode. Every N seconds it clears and redraws:
+- **Header** — node ID, region, timestamp
+- **Fleet pane** — active agents, max, version
+- **Health pane** — healthy/degraded/critical/dead counts with colored bar charts
+- **Live Agents** — fleet aggregate health bar
+- **Scheduled Jobs** — up to 4 next-due jobs with type, next run, run/fail counts
+- **Footer** — countdown bar; `[r]` force refresh, `[q]` quit
+
+### Demo mode
+`apollo demo` is fully offline — no node, no files written. It simulates the exact formatted output of a running Apollo node for 10 platform modules in sequence, with Enter-to-continue between sections. `--quick` shows a 60-second highlights tour. `--module <name>` jumps to one section. Designed for potential users and evaluators.
+
+### Guide
+`apollo guide` is built-in paginated documentation. `apollo guide quick-start` shows installation and first-run. `apollo guide api` is the full REST API quick reference. The interactive menu accepts numbers (1–11) or topic names.
+
+### Interactive shell
+`apollo` with no arguments now shows a colored banner and enhanced help listing all command groups. The `help` command inside the shell prints the full command table.
+
+---
+
 ## Background Tasks
 
 Three background loops start automatically when the node daemon starts:
@@ -377,18 +441,51 @@ STATUS: PRODUCTION READY  [Apollo v2.0]
 
 ---
 
+## Complete Feature Matrix (updated)
+
+| Feature | v1.0 | v1.1 | v1.2 | v2.0 |
+|---------|:----:|:----:|:----:|:----:|
+| Multi-tenant agent isolation | ✓ | ✓ | ✓ | ✓ |
+| Cross-platform (Linux/macOS/Windows) | ✓ | ✓ | ✓ | ✓ |
+| Any language / runtime | ✓ | ✓ | ✓ | ✓ |
+| Agent versioning + rollback | | ✓ | ✓ | ✓ |
+| URL / git agent sourcing | | ✓ | ✓ | ✓ |
+| Runtime auto-provisioning | | ✓ | ✓ | ✓ |
+| Hub fleet coordination | ✓ | ✓ | ✓ | ✓ |
+| TLS / HTTPS | | | ✓ | ✓ |
+| JWT authentication | | | ✓ | ✓ |
+| Per-tenant secret injection | | | ✓ | ✓ |
+| Usage metering + billing reset | | | ✓ | ✓ |
+| Persistent volumes | | | ✓ | ✓ |
+| Webhook events (HMAC-signed) | | | ✓ | ✓ |
+| Multi-region fleet routing | | | ✓ | ✓ |
+| Distributed tracing | | | | ✓ |
+| Per-tenant governance / policy | | | | ✓ |
+| Health intelligence + scoring | | | | ✓ |
+| Agent memory (KV + similarity) | | | | ✓ |
+| Cost/latency model routing | | | | ✓ |
+| Cron / interval / once scheduler | | | | ✓ |
+| Blueprints + groups + workflow DAGs | | | | ✓ |
+| Automatic architecture selection | | | | ✓ |
+| **Advanced CLI (full REST coverage)** | | | | **✓** |
+| **Live terminal dashboard** | | | | **✓** |
+| **Offline platform demo** | | | | **✓** |
+| **Built-in documentation guide** | | | | **✓** |
+
+---
+
 ## Deferred (v3.0 Roadmap)
 
 | Item | Priority | Rationale |
 |------|----------|-----------|
 | Kubernetes operator / Helm chart | P1 | Required for Fortune 500 and marketplace listing |
-| Dashboard UI | P1 | Fleet health, per-tenant usage, trace timeline, agent catalog |
-| Python / Node / Go SDK | P1 | `apollo.run_agent(tenant, agent)` thin client libraries |
+| Official Python / Node / Go SDK | P1 | `apollo.run_agent(tenant, agent)` thin client libraries |
+| Web dashboard UI | P2 | Provider-embeddable React component or hosted UI for non-CLI operators |
 | Parallel workflow execution | P2 | workflow.rs currently fires steps sequentially within a run |
 | Real-time alerting | P2 | Health drops / budget exhaustion → PagerDuty / Slack / email |
 | Agent-to-agent messaging bus | P2 | Runtime message passing between running agents |
-| Vector storage for memory | P2 | Qdrant / pgvector / in-process HNSW replacing TF-IDF Jaccard |
+| Vector storage for memory | P2 | Qdrant / pgvector / HNSW replacing TF-IDF Jaccard |
 
 ---
 
-*Apollo v2.0 — Execution · Observability · Governance · Health · Memory · Routing · Scheduling · Orchestration · Architecture Selection*
+*Apollo v2.0 — CLI · Dashboard · Demo · Guide · Execution · Observability · Governance · Health · Memory · Routing · Scheduling · Orchestration · Architecture Selection*
