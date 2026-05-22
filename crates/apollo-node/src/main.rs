@@ -83,11 +83,42 @@ use apollo_core::orchestration::{
 };
 use apollo_core::arch_selector::{ArchitectureSelector, QuickClassifyRequest, quick_classify};
 
+// ── CLI modules ───────────────────────────────────────────────────────────────
+mod fmt;
+mod client;
+mod commands;
+
+use client::NodeClient;
+use commands::{
+    traces::TracesCmd,
+    policy::PolicyCmd,
+    health_cmd::HealthCmd,
+    memory_cmd::MemoryCmd,
+    models::ModelsCmd,
+    schedule_cmd::ScheduleCmd,
+    orchestration::{BlueprintCmd, GroupCmd, WorkflowCmd},
+    arch_cmd::ArchCmd,
+    usage_cmd::UsageCmd,
+};
+
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "apollo", about = "APOLLO — AI Agent Execution Platform v2.0")]
+#[command(
+    name = "apollo",
+    about = "APOLLO — AI Agent Execution Platform v2.0",
+    long_about = "APOLLO is a self-hosted AI agent execution engine.\n\
+Run 'apollo demo' for an offline walkthrough, 'apollo guide' for documentation."
+)]
 struct Cli {
+    /// Node URL (for v2.0 commands that talk to a running node)
+    #[arg(long, global = true, default_value = "http://localhost:8080",
+          env = "APOLLO_NODE")]
+    node: String,
+    /// API key for the node
+    #[arg(long, global = true, default_value = "apollo-dev-secret",
+          env = "APOLLO_KEY")]
+    key: String,
     #[command(subcommand)]
     command: Commands,
 }
@@ -99,15 +130,106 @@ enum Commands {
         #[command(subcommand)]
         action: NodeAction,
     },
-    /// Agent management
+    /// Agent management (v1.x)
     Agent {
         #[arg(short, long, default_value = ".apollo")]
         base_dir: PathBuf,
         #[command(subcommand)]
         action: AgentAction,
     },
-    /// System-wide health check
+    /// 12-point system validation — certifies every deployment
     Doctor,
+
+    // ── v2.0 commands ─────────────────────────────────────────────────────
+
+    /// Live auto-refresh terminal dashboard (like htop)
+    Dashboard {
+        /// Refresh interval in seconds
+        #[arg(long, default_value = "5")]
+        refresh: u64,
+    },
+
+    /// Distributed tracing — spans, token costs, billing
+    Traces {
+        #[command(subcommand)]
+        action: TracesCmd,
+    },
+
+    /// Per-tenant governance policy
+    Policy {
+        #[command(subcommand)]
+        action: PolicyCmd,
+    },
+
+    /// Health intelligence — scoring, crash patterns, trends
+    Health {
+        #[command(subcommand)]
+        action: HealthCmd,
+    },
+
+    /// Persistent agent memory (KV store + TF-IDF search)
+    Memory {
+        #[command(subcommand)]
+        action: MemoryCmd,
+    },
+
+    /// LLM model registry and cost-aware routing
+    Models {
+        #[command(subcommand)]
+        action: ModelsCmd,
+    },
+
+    /// Cron / interval / one-shot job scheduler
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleCmd,
+    },
+
+    /// Agent deployment blueprints
+    Blueprint {
+        #[command(subcommand)]
+        action: BlueprintCmd,
+    },
+
+    /// Agent groups — bulk start/stop
+    Group {
+        #[command(subcommand)]
+        action: GroupCmd,
+    },
+
+    /// Workflow DAG — define, run, and track multi-agent pipelines
+    Workflow {
+        #[command(subcommand)]
+        action: WorkflowCmd,
+    },
+
+    /// Automatic architecture selection (Deterministic / SingleAgent / MultiAgent)
+    Arch {
+        #[command(subcommand)]
+        action: ArchCmd,
+    },
+
+    /// Usage metering and billing cycle management
+    Usage {
+        #[command(subcommand)]
+        action: UsageCmd,
+    },
+
+    /// Offline guided demo of all Apollo v2.0 platform modules
+    Demo {
+        /// Show only one module: doctor|agent|governance|traces|health|memory|models|schedule|orchestration|arch
+        #[arg(long)]
+        module: Option<String>,
+        /// 60-second highlights tour
+        #[arg(long)]
+        quick: bool,
+    },
+
+    /// Built-in documentation and API reference
+    Guide {
+        /// Topic: quick-start|concepts|observability|governance|health|memory|routing|scheduler|orchestration|arch-selection|api
+        topic: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -256,47 +378,136 @@ fn extract_key(headers: &HeaderMap, valid_keys: &[String], jwt_secret: Option<&s
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!(r#"
-   ___   ___  ____  __    __    ____
-  / _ | / _ \/ __ \/ /   / /   / __ \
- / __ |/ ___/ /_/ / /___/ /___/ /_/ /
-/_/ |_/_/   \____/_____/_____/\____/
-
-MISSION CONTROL  v2.0
-"#);
-
     if std::env::args().len() == 1 {
         run_interactive_shell().await?;
         return Ok(());
     }
 
     let cli = Cli::parse();
-    handle_command(cli.command).await
+    handle_command_with_flags(cli.node, cli.key, cli.command).await
 }
 
-async fn handle_command(command: Commands) -> Result<()> {
+// helper: build NodeClient from Cli global flags
+fn make_client(node: &str, key: &str) -> NodeClient {
+    NodeClient::new(node, key)
+}
+
+async fn handle_command_with_flags(node: String, key: String, command: Commands) -> Result<()> {
     match command {
         Commands::Node { action } => handle_node(action).await,
         Commands::Agent { base_dir, action } => handle_agent(&base_dir, action).await,
+
         Commands::Doctor => {
+            use colored::Colorize;
             let profile = detect_node_capabilities().await?;
-            println!("[OK] Node Engine Initialized");
-            println!("[OK] Hub Connectivity Ready");
-            println!("[OK] Event Spine Active");
-            println!("[OK] Security Sandbox Enabled");
-            println!("[OK] Observability Layer Active");
-            println!("[OK] Policy Engine Active");
-            println!("[OK] Health Intelligence Active");
-            println!("[OK] Memory Layer Active");
-            println!("[OK] Model Router Active");
-            println!("[OK] Scheduler Active");
-            println!("[OK] Orchestration APIs Active");
-            println!("[OK] Architecture Selector Active");
-            println!("[OK] Runtimes Detected: {}", profile.runtimes.join(", "));
-            println!("STATUS: PRODUCTION READY  [Apollo v2.0]");
+            println!("{}", "[OK] Node Engine Initialized".green());
+            println!("{}", "[OK] Hub Connectivity Ready".green());
+            println!("{}", "[OK] Event Spine Active".green());
+            println!("{}", "[OK] Security Sandbox Enabled".green());
+            println!("{}", "[OK] Observability Layer Active".green());
+            println!("{}", "[OK] Policy Engine Active".green());
+            println!("{}", "[OK] Health Intelligence Active".green());
+            println!("{}", "[OK] Memory Layer Active".green());
+            println!("{}", "[OK] Model Router Active".green());
+            println!("{}", "[OK] Scheduler Active".green());
+            println!("{}", "[OK] Orchestration APIs Active".green());
+            println!("{}", "[OK] Architecture Selector Active".green());
+            println!("{}", format!("[OK] Runtimes Detected: {}", profile.runtimes.join(", ")).green());
+            println!("{}", "STATUS: PRODUCTION READY  [Apollo v2.0]".cyan().bold());
+            Ok(())
+        }
+
+        Commands::Dashboard { refresh } => {
+            let client = make_client(&node, &key);
+            commands::dashboard::run(&client, refresh)?;
+            Ok(())
+        }
+
+        Commands::Traces { action } => {
+            let client = make_client(&node, &key);
+            commands::traces::run(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Policy { action } => {
+            let client = make_client(&node, &key);
+            commands::policy::run(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Health { action } => {
+            let client = make_client(&node, &key);
+            commands::health_cmd::run(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Memory { action } => {
+            let client = make_client(&node, &key);
+            commands::memory_cmd::run(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Models { action } => {
+            let client = make_client(&node, &key);
+            commands::models::run(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Schedule { action } => {
+            let client = make_client(&node, &key);
+            commands::schedule_cmd::run(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Blueprint { action } => {
+            let client = make_client(&node, &key);
+            commands::orchestration::run_blueprint(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Group { action } => {
+            let client = make_client(&node, &key);
+            commands::orchestration::run_group(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Workflow { action } => {
+            let client = make_client(&node, &key);
+            commands::orchestration::run_workflow(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Arch { action } => {
+            let client = make_client(&node, &key);
+            commands::arch_cmd::run(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Usage { action } => {
+            let client = make_client(&node, &key);
+            commands::usage_cmd::run(action, &client)?;
+            Ok(())
+        }
+
+        Commands::Demo { module, quick } => {
+            commands::demo::run(module, quick);
+            Ok(())
+        }
+
+        Commands::Guide { topic } => {
+            commands::guide::run(topic);
             Ok(())
         }
     }
+}
+
+// Thin wrapper kept for interactive shell (which doesn't have node/key context easily)
+async fn handle_command(command: Commands) -> Result<()> {
+    handle_command_with_flags(
+        "http://localhost:8080".to_string(),
+        "apollo-dev-secret".to_string(),
+        command,
+    ).await
 }
 
 async fn handle_node(action: NodeAction) -> Result<()> {
@@ -440,23 +651,75 @@ async fn handle_agent(base_dir: &Path, action: AgentAction) -> Result<()> {
 
 // ── Interactive shell ─────────────────────────────────────────────────────────
 
+fn print_shell_help() {
+    use colored::Colorize;
+    println!("{}", "\n  ── Apollo v2.0 Interactive Shell ───────────────────────────────────".cyan());
+    println!("  {:<28} {}", "doctor".bold(),           "12-point system check");
+    println!("  {:<28} {}", "demo [--quick]".bold(),   "offline platform walkthrough");
+    println!("  {:<28} {}", "guide [topic]".bold(),    "built-in documentation");
+    println!("  {:<28} {}", "dashboard".bold(),        "live fleet terminal view");
+    println!();
+    println!("  {}", "── Agent Management ──".dimmed());
+    println!("  {:<28} {}", "agent --base-dir .apollo add <src>".bold(),  "register agent");
+    println!("  {:<28} {}", "agent --base-dir .apollo run <n> --tenant T".bold(), "start agent");
+    println!("  {:<28} {}", "agent --base-dir .apollo stop <n> --tenant T".bold(),"stop agent");
+    println!("  {:<28} {}", "agent --base-dir .apollo list".bold(),       "list all agents");
+    println!();
+    println!("  {}", "── v2.0 Platform ─────────────────────────────────────────────────".dimmed());
+    println!("  {:<28} {}", "traces list <tenant> <agent>".bold(),     "trace summaries");
+    println!("  {:<28} {}", "traces tokens <tenant>".bold(),           "billing token rollup");
+    println!("  {:<28} {}", "policy get <tenant>".bold(),              "governance policy");
+    println!("  {:<28} {}", "policy compliance <tenant>".bold(),       "compliance score");
+    println!("  {:<28} {}", "health fleet".bold(),                     "fleet status");
+    println!("  {:<28} {}", "health agent <tenant> <agent>".bold(),    "agent health score");
+    println!("  {:<28} {}", "memory list <tenant> <agent>".bold(),     "memory store keys");
+    println!("  {:<28} {}", "models list".bold(),                      "registered LLM models");
+    println!("  {:<28} {}", "models route <tenant>".bold(),            "routing recommendation");
+    println!("  {:<28} {}", "schedule list".bold(),                    "all scheduled jobs");
+    println!("  {:<28} {}", "blueprint list".bold(),                   "deployment blueprints");
+    println!("  {:<28} {}", "workflow list".bold(),                    "workflow definitions");
+    println!("  {:<28} {}", "arch classify --tools N --branches N".bold(), "architecture advice");
+    println!("  {:<28} {}", "usage list".bold(),                       "all-tenant usage");
+    println!();
+    println!("  {:<28} {}", "help".bold(),   "show this message");
+    println!("  {:<28} {}", "exit / quit".bold(), "leave interactive mode");
+    println!("  {}", "───────────────────────────────────────────────────────────────────".dimmed());
+    println!("  {}", "Tip: add --node URL --key KEY to target a specific node".dimmed());
+    println!();
+}
+
 async fn run_interactive_shell() -> Result<()> {
     use dialoguer::{Input, theme::ColorfulTheme};
-    println!("Interactive mode. Type 'help' for commands, 'exit' to quit.");
+    use colored::Colorize;
+
+    fmt::apollo_banner();
+    println!("{}", "  Interactive mode — type 'help' for commands, 'exit' to quit.\n".dimmed());
+
     loop {
         let input: String = Input::with_theme(&ColorfulTheme::default())
             .with_prompt("apollo")
             .interact_text()?;
-        if input == "exit" || input == "quit" { break; }
-        if input.trim().is_empty() { continue; }
+
+        let trimmed = input.trim();
+        if trimmed == "exit" || trimmed == "quit" { break; }
+        if trimmed.is_empty() { continue; }
+        if trimmed == "help" || trimmed == "?" {
+            print_shell_help();
+            continue;
+        }
 
         let mut full_args = vec!["apollo".to_string()];
-        full_args.extend(input.split_whitespace().map(|s| s.to_string()));
-        match Cli::try_parse_from(full_args) {
-            Ok(cli) => { if let Err(e) = handle_command(cli.command).await { println!("Error: {}", e); } }
-            Err(e)  => println!("{}", e),
+        full_args.extend(trimmed.split_whitespace().map(|s| s.to_string()));
+        match Cli::try_parse_from(&full_args) {
+            Ok(cli) => {
+                if let Err(e) = handle_command_with_flags(cli.node, cli.key, cli.command).await {
+                    println!("{}", format!("Error: {}", e).red());
+                }
+            }
+            Err(e) => println!("{}", e),
         }
     }
+    println!("{}", "  Goodbye.".dimmed());
     Ok(())
 }
 
