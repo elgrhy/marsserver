@@ -5,7 +5,7 @@
 
 use anyhow::{anyhow, Result};
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::CONTENT_TYPE;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -33,11 +33,12 @@ pub struct NodeClient {
 
 impl NodeClient {
     pub fn new(node: &str, key: &str) -> Self {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-apollo-key", HeaderValue::from_str(key).unwrap());
+        // Note: avoid default_headers — unreliable when building a blocking::Client
+        // inside a tokio async context (build() may silently fall back to a bare
+        // Client via unwrap_or_default, losing the headers).  We add x-apollo-key
+        // explicitly on every request in the helpers below instead.
         let client = Client::builder()
-            .default_headers(headers)
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_default();
         Self {
@@ -51,7 +52,9 @@ impl NodeClient {
 
     fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = format!("{}{}", self.base, path);
-        let resp = self.client.get(&url).send()
+        let resp = self.client.get(&url)
+            .header("x-apollo-key", &self.key)
+            .send()
             .map_err(|e| anyhow!("Connection failed ({}): {}", url, e))?;
         if !resp.status().is_success() {
             let status = resp.status();
@@ -64,6 +67,7 @@ impl NodeClient {
     fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
         let url = format!("{}{}", self.base, path);
         let resp = self.client.post(&url)
+            .header("x-apollo-key", &self.key)
             .header(CONTENT_TYPE, "application/json")
             .json(body)
             .send()
@@ -79,6 +83,7 @@ impl NodeClient {
     fn put<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
         let url = format!("{}{}", self.base, path);
         let resp = self.client.put(&url)
+            .header("x-apollo-key", &self.key)
             .header(CONTENT_TYPE, "application/json")
             .json(body)
             .send()
@@ -93,7 +98,9 @@ impl NodeClient {
 
     fn delete_req(&self, path: &str) -> Result<Value> {
         let url = format!("{}{}", self.base, path);
-        let resp = self.client.delete(&url).send()
+        let resp = self.client.delete(&url)
+            .header("x-apollo-key", &self.key)
+            .send()
             .map_err(|e| anyhow!("Connection failed ({}): {}", url, e))?;
         if !resp.status().is_success() {
             let status = resp.status();
@@ -180,7 +187,13 @@ impl NodeClient {
     // ── Memory ────────────────────────────────────────────────────────────────
 
     pub fn memory_list(&self, tenant: &str, agent: &str) -> Result<Vec<String>> {
-        self.get(&format!("/memory/{}/{}", tenant, agent))
+        // Server returns {"keys": [...]}
+        let val: Value = self.get(&format!("/memory/{}/{}", tenant, agent))?;
+        let keys = val.get("keys")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        Ok(keys)
     }
 
     pub fn memory_get(&self, tenant: &str, agent: &str, key: &str) -> Result<MemoryEntry> {

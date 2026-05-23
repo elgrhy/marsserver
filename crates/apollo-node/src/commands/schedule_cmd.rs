@@ -70,6 +70,9 @@ pub fn run(cmd: ScheduleCmd, client: &NodeClient) -> Result<()> {
         }
 
         ScheduleCmd::Create { name, tenant, agent, cron, interval, once } => {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+            let id = format!("{:x}", now ^ (name.len() as u64 * 0x9e3779b97f4a7c15));
             let schedule = if let Some(expr) = cron {
                 serde_json::json!({"type": "cron", "expression": expr})
             } else if let Some(secs) = interval {
@@ -80,11 +83,22 @@ pub fn run(cmd: ScheduleCmd, client: &NodeClient) -> Result<()> {
                 anyhow::bail!("Specify one of --cron, --interval, or --once");
             };
             let body = serde_json::json!({
-                "name": name, "tenant_id": tenant, "agent_id": agent,
-                "schedule": schedule, "enabled": true,
+                "id": id,
+                "name": name,
+                "tenant_id": tenant,
+                "agent_id": agent,
+                "schedule": schedule,
+                "enabled": true,
+                "extra_env": {},
+                "created_at": now,
+                "updated_at": now,
+                "last_run": null,
+                "next_run": now,
+                "run_count": 0,
+                "fail_count": 0,
             });
             let job = client.schedule_create(&body)?;
-            fmt::ok(&format!("Created job '{}' (id: {})", job.name, &job.id[..8]));
+            fmt::ok(&format!("Created job '{}' (id: {})", job.name, &job.id[..8.min(job.id.len())]));
         }
 
         ScheduleCmd::Get { job_id } => {

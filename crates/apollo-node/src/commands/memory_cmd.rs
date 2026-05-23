@@ -9,12 +9,20 @@ use crate::fmt;
 #[derive(Subcommand)]
 pub enum MemoryCmd {
     /// Retrieve a memory entry by key
-    Get { tenant: String, agent: String, key: String },
+    Get {
+        tenant: String,
+        agent: String,
+        /// Memory entry key
+        #[arg(value_name = "KEY")]
+        entry_key: String,
+    },
     /// Store or update a memory entry
     Put {
         tenant: String,
         agent:  String,
-        key:    String,
+        /// Memory entry key
+        #[arg(value_name = "KEY")]
+        entry_key: String,
         /// JSON value to store (string, object, array, number)
         value:  String,
         /// TTL in seconds (omit for no expiry)
@@ -28,7 +36,13 @@ pub enum MemoryCmd {
         text: Option<String>,
     },
     /// Delete a memory entry
-    Delete { tenant: String, agent: String, key: String },
+    Delete {
+        tenant: String,
+        agent: String,
+        /// Memory entry key
+        #[arg(value_name = "KEY")]
+        entry_key: String,
+    },
     /// List all live memory keys
     List { tenant: String, agent: String },
     /// Similarity search over memory
@@ -50,9 +64,9 @@ pub enum MemoryCmd {
 
 pub fn run(cmd: MemoryCmd, client: &NodeClient) -> Result<()> {
     match cmd {
-        MemoryCmd::Get { tenant, agent, key } => {
-            let entry = client.memory_get(&tenant, &agent, &key)?;
-            fmt::section(&format!("Memory: {}/{}/{}", tenant, agent, key));
+        MemoryCmd::Get { tenant, agent, entry_key } => {
+            let entry = client.memory_get(&tenant, &agent, &entry_key)?;
+            fmt::section(&format!("Memory: {}/{}/{}", tenant, agent, entry_key));
             fmt::kv("Key",        &entry.key);
             fmt::kv("Value",      &serde_json::to_string_pretty(&entry.value).unwrap_or_default());
             fmt::kv("Tags",       &entry.tags.join(", "));
@@ -64,7 +78,7 @@ pub fn run(cmd: MemoryCmd, client: &NodeClient) -> Result<()> {
             }
         }
 
-        MemoryCmd::Put { tenant, agent, key, value, ttl, tags, text } => {
+        MemoryCmd::Put { tenant, agent, entry_key, value, ttl, tags, text } => {
             let parsed_value: serde_json::Value = serde_json::from_str(&value)
                 .unwrap_or_else(|_| serde_json::Value::String(value.clone()));
             let tag_list: Vec<String> = tags
@@ -79,13 +93,13 @@ pub fn run(cmd: MemoryCmd, client: &NodeClient) -> Result<()> {
                 "text": text,
                 "ttl_secs": ttl,
             });
-            client.memory_put(&tenant, &agent, &key, &body)?;
-            fmt::ok(&format!("Stored memory key '{}' for {}/{}", key, tenant, agent));
+            client.memory_put(&tenant, &agent, &entry_key, &body)?;
+            fmt::ok(&format!("Stored memory key '{}' for {}/{}", entry_key, tenant, agent));
         }
 
-        MemoryCmd::Delete { tenant, agent, key } => {
-            client.memory_delete(&tenant, &agent, &key)?;
-            fmt::ok(&format!("Deleted memory key '{}'", key));
+        MemoryCmd::Delete { tenant, agent, entry_key } => {
+            client.memory_delete(&tenant, &agent, &entry_key)?;
+            fmt::ok(&format!("Deleted memory key '{}'", entry_key));
         }
 
         MemoryCmd::List { tenant, agent } => {

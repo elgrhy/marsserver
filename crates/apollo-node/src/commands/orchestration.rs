@@ -15,6 +15,9 @@ pub enum BlueprintCmd {
     Create {
         #[arg(long)] name:        String,
         #[arg(long)] agent:       String,
+        /// Short description of this blueprint
+        #[arg(long, default_value = "")]
+        description: String,
         #[arg(long)] pin_version: Option<String>,
         #[arg(long)] region:      Option<String>,
         /// Comma-separated tags
@@ -50,24 +53,37 @@ pub fn run_blueprint(cmd: BlueprintCmd, client: &NodeClient) -> Result<()> {
             );
         }
 
-        BlueprintCmd::Create { name, agent, pin_version, region, tags } => {
+        BlueprintCmd::Create { name, agent, pin_version, region, tags, description } => {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+            // Generate a deterministic ID from name + timestamp
+            let id = format!("{:x}", now ^ (name.len() as u64).wrapping_mul(0x9e3779b97f4a7c15));
             let tag_list: Vec<String> = tags.unwrap_or_default()
                 .split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
             let body = serde_json::json!({
-                "name": name, "agent_id": agent,
-                "pin_version": pin_version, "region": region, "tags": tag_list,
+                "id":          id,
+                "name":        name,
+                "description": description,
+                "agent_id":    agent,
+                "pin_version": pin_version,
+                "region":      region,
+                "tags":        tag_list,
+                "default_env": {},
+                "created_at":  now,
+                "updated_at":  now,
             });
             let bp = client.blueprint_create(&body)?;
-            fmt::ok(&format!("Created blueprint '{}' (id: {})", bp.name, &bp.id[..8]));
+            fmt::ok(&format!("Created blueprint '{}' (id: {})", bp.name, &bp.id[..8.min(bp.id.len())]));
         }
 
         BlueprintCmd::Get { id } => {
             let b = client.blueprint_get(&id)?;
             fmt::section(&format!("Blueprint — {}", b.name));
             fmt::kv("ID",          &b.id);
+            fmt::kv("Description", if b.description.is_empty() { "—" } else { &b.description });
             fmt::kv("Agent",       &b.agent_id);
-            fmt::kv("Version",     &b.pin_version.unwrap_or_else(|| "latest".into()));
-            fmt::kv("Region",      &b.region.unwrap_or_else(|| "any".into()));
+            fmt::kv("Version",     &b.pin_version.clone().unwrap_or_else(|| "latest".into()));
+            fmt::kv("Region",      &b.region.clone().unwrap_or_else(|| "any".into()));
             fmt::kv("Tags",        &b.tags.join(", "));
         }
 
@@ -124,15 +140,26 @@ pub fn run_group(cmd: GroupCmd, client: &NodeClient) -> Result<()> {
         }
 
         GroupCmd::Create { name, tenant, agents } => {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+            let id = format!("{:x}", now ^ (name.len() as u64).wrapping_mul(0x9e3779b97f4a7c15));
             let members: Vec<serde_json::Value> = agents
                 .split(',')
-                .map(|a| serde_json::json!({"agent_id": a.trim()}))
+                .filter(|a| !a.trim().is_empty())
+                .map(|a| serde_json::json!({"agent_id": a.trim(), "blueprint_id": null, "tenant_override": null}))
                 .collect();
             let body = serde_json::json!({
-                "name": name, "tenant_id": tenant, "members": members,
+                "id":          id,
+                "name":        name,
+                "description": "",
+                "tenant_id":   tenant,
+                "members":     members,
+                "status":      "stopped",
+                "created_at":  now,
+                "updated_at":  now,
             });
             let g = client.group_create(&body)?;
-            fmt::ok(&format!("Created group '{}' (id: {})", g.name, &g.id[..8]));
+            fmt::ok(&format!("Created group '{}' (id: {})", g.name, &g.id[..8.min(g.id.len())]));
         }
 
         GroupCmd::Get { id } => {

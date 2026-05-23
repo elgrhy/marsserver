@@ -61,15 +61,19 @@ pub fn run(cmd: PolicyCmd, client: &NodeClient) -> Result<()> {
             tenant, file, max_instances, allowed_agents, blocked_agents,
             data_residency, max_tokens_per_day, require_audit,
         } => {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
             let mut policy: TenantPolicy = if let Some(path) = file {
                 let raw = std::fs::read_to_string(&path)?;
                 serde_json::from_str(&raw)?
             } else {
-                // Start from existing or default
-                client.policy_get(&tenant).unwrap_or_else(|_| TenantPolicy {
-                    tenant_id: tenant.clone(),
+                // Build fresh from flags — avoids a GET+PUT double-request
+                TenantPolicy {
+                    tenant_id:  tenant.clone(),
+                    created_at: now,
+                    updated_at: now,
                     ..Default::default()
-                })
+                }
             };
 
             policy.tenant_id = tenant.clone();
