@@ -230,6 +230,60 @@ enum Commands {
         /// Topic: quick-start|concepts|observability|governance|health|memory|routing|scheduler|orchestration|arch-selection|api
         topic: Option<String>,
     },
+
+    // ── Journey-first shortcuts ────────────────────────────────────────────────
+
+    /// Guided first-time setup wizard
+    Init,
+
+    /// Add an agent — interactive wizard or pass source directly
+    Add {
+        /// Agent source: local path, git URL, or HTTPS archive (skip prompt if provided)
+        source: Option<String>,
+        /// Workspace directory
+        #[arg(short = 'd', long, default_value = ".apollo")]
+        base_dir: std::path::PathBuf,
+    },
+
+    /// Run a registered agent — interactive selection or pass agent name directly
+    Run {
+        /// Agent name (optional — prompts if omitted)
+        name: Option<String>,
+        /// Tenant / user ID
+        #[arg(long)]
+        tenant: Option<String>,
+        /// Workspace directory
+        #[arg(short = 'd', long, default_value = ".apollo")]
+        base_dir: std::path::PathBuf,
+    },
+
+    /// Stop a running agent — interactive selection or pass agent name directly
+    Stop {
+        /// Agent name (optional — prompts if omitted)
+        name: Option<String>,
+        /// Workspace directory
+        #[arg(short = 'd', long, default_value = ".apollo")]
+        base_dir: std::path::PathBuf,
+    },
+
+    /// Show node connectivity, registered agents, and running instances
+    Status {
+        /// Workspace directory
+        #[arg(short = 'd', long, default_value = ".apollo")]
+        base_dir: std::path::PathBuf,
+    },
+
+    /// Tail agent output logs
+    Logs {
+        /// Agent name (optional — prompts if omitted)
+        name: Option<String>,
+        /// Follow output in real time (like tail -f)
+        #[arg(short = 'f', long)]
+        follow: bool,
+        /// Workspace directory
+        #[arg(short = 'd', long, default_value = ".apollo")]
+        base_dir: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -379,7 +433,11 @@ fn extract_key(headers: &HeaderMap, valid_keys: &[String], jwt_secret: Option<&s
 #[tokio::main]
 async fn main() -> Result<()> {
     if std::env::args().len() == 1 {
-        run_interactive_shell().await?;
+        // Journey-first: interactive landing menu replaces the old line-editor REPL
+        commands::journey::run_landing_menu(
+            "http://localhost:8080".to_string(),
+            "apollo-dev-secret".to_string(),
+        ).await?;
         return Ok(());
     }
 
@@ -497,6 +555,32 @@ async fn handle_command_with_flags(node: String, key: String, command: Commands)
         Commands::Guide { topic } => {
             commands::guide::run(topic);
             Ok(())
+        }
+
+        // ── Journey-first shortcuts ────────────────────────────────────────────
+
+        Commands::Init => {
+            commands::journey::journey_init().await
+        }
+
+        Commands::Add { source, base_dir } => {
+            commands::journey::journey_add(base_dir, source).await
+        }
+
+        Commands::Run { name, tenant, base_dir } => {
+            commands::journey::journey_run(base_dir, name, tenant).await
+        }
+
+        Commands::Stop { name, base_dir } => {
+            commands::journey::journey_stop(base_dir, name).await
+        }
+
+        Commands::Status { base_dir } => {
+            commands::journey::journey_status(base_dir, &node, &key).await
+        }
+
+        Commands::Logs { name, follow, base_dir } => {
+            commands::journey::journey_logs(base_dir, name, Some(follow)).await
         }
     }
 }

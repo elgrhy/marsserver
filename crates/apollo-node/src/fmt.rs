@@ -199,6 +199,67 @@ fn textwrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+// ── Journey-first CLI formatting ──────────────────────────────────────────────
+
+/// Numbered wizard step: "  [1/3] Configure the node"
+pub fn step(n: usize, total: usize, msg: &str) {
+    println!("\n  {} {}", format!("[{}/{}]", n, total).cyan().bold(), msg.bold());
+}
+
+/// Successful sub-step: "    ✓ Data directory created"
+pub fn substep_ok(msg: &str) {
+    println!("    {} {}", "✓".green().bold(), msg);
+}
+
+/// Informational sub-step: "    · Checking port 8080..."
+pub fn substep_info(msg: &str) {
+    println!("    {} {}", "·".dimmed(), msg.dimmed());
+}
+
+/// Boxed success summary with aligned key/value pairs.
+///
+/// ```
+/// success_box("Agent added!", &[("Name", "openclaw"), ("Version", "1.0.0")]);
+/// ```
+pub fn success_box(title: &str, items: &[(&str, &str)]) {
+    let w = 54usize;
+    println!("\n  {} {}", "✓".green().bold(), title.green().bold());
+    println!("  {}", "─".repeat(w).dimmed());
+    for (k, v) in items {
+        println!("  {:<22} {}", format!("{}:", k).dimmed(), v);
+    }
+    println!();
+}
+
+/// Numbered next-steps block.
+pub fn next_steps(steps: &[&str]) {
+    println!("  {}", "Next steps:".bold());
+    for (i, s) in steps.iter().enumerate() {
+        println!("  {}  {}", format!("{}", i + 1).cyan().bold(), s);
+    }
+    println!();
+}
+
+/// Single ℹ hint line.
+pub fn hint(msg: &str) {
+    println!("  {} {}", "ℹ".cyan(), msg.dimmed());
+}
+
+/// Inline command suggestion.
+pub fn suggest(cmd: &str) {
+    println!("    {} {}", "$".dimmed(), cmd.white().bold());
+}
+
+/// Warning hint line.
+pub fn warn_hint(msg: &str) {
+    println!("  {} {}", "⚠".yellow(), msg.yellow());
+}
+
+/// Thin separator line.
+pub fn separator() {
+    println!("  {}", "─".repeat(56).dimmed());
+}
+
 // ── Apollo banner ─────────────────────────────────────────────────────────────
 
 pub fn apollo_banner() {

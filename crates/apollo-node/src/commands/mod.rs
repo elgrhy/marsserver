@@ -10,3 +10,5 @@ pub mod arch_cmd;
 pub mod usage_cmd;
 pub mod demo;
 pub mod guide;
+pub mod wizard;
+pub mod journey;
