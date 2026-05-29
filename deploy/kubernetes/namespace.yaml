@@ -1,0 +1,10 @@
+# Apollo Platform — Namespace
+# Apply first: kubectl apply -f namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apollo
+  labels:
+    app.kubernetes.io/name: apollo
+    app.kubernetes.io/version: "2.2.0"
+    app.kubernetes.io/managed-by: kubectl

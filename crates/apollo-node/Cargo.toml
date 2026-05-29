@@ -33,3 +33,5 @@ tracing-subscriber  = { workspace = true }
 shell-words         = { workspace = true }
 rand                = { workspace = true }
 hex                 = { workspace = true }
+futures             = { workspace = true }
+tokio-stream        = { workspace = true }

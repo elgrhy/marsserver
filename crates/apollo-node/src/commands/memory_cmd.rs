@@ -121,7 +121,7 @@ pub fn run(cmd: MemoryCmd, client: &NodeClient) -> Result<()> {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
-            let q = MemoryQuery { query, tags: tag_list, limit, min_score: 0.0 };
+            let q = MemoryQuery { query, tags: tag_list, limit, min_score: 0.0, embedding: None };
             let results = client.memory_search(&tenant, &agent, &q)?;
             if results.is_empty() {
                 fmt::info("No matching memory entries.");

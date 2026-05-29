@@ -1,17 +1,34 @@
-# APOLLO v2.1
+# APOLLO v2.2
 
 **Production-grade distributed infrastructure runtime for autonomous AI agents.**
 
 Apollo is a self-hosted execution engine and fleet coordination layer that gives infrastructure providers, IT teams, and SaaS platforms a secure, observable, governance-aware foundation for running agent workloads at scale. Deploy once, operate indefinitely — no developer involvement required.
 
-**Status:** Production Certified — v2.1  
+**Status:** Production Certified — v2.2  
 **Tests:** 60/60 unit tests passing · 0 warnings · Zero external ML dependencies
+
+---
+
+## What's New in v2.2
+
+v2.2 adds 7 new capabilities while maintaining 100% backward compatibility with all v2.0/v2.1 APIs.
+
+| Feature | Description |
+|---------|-------------|
+| **Real-time alerting** | Slack/PagerDuty/webhook rules with cooldown, evaluated every 30 s |
+| **Agent messaging bus** | Topic-based pub/sub between running agents — sequence polling, TTL |
+| **Vector memory search** | Cosine TF-IDF (upgraded from Jaccard) + optional Qdrant backend |
+| **Parallel workflows** | True concurrent DAG execution via `futures::future::join_all` |
+| **Web dashboard** | Self-contained HTML served from `GET /dashboard` — no build step |
+| **Kubernetes operator** | `ApolloAgent` CRD reconciler using kube-rs |
+| **Helm chart** | `deploy/helm/apollo/` — StatefulSet node, Deployment hub, CRD, HPA |
+| **Multi-language SDKs** | Python, TypeScript/Node.js, Go — full v2.2 API coverage |
 
 ---
 
 ## What's New in v2.1 — Full Production Hardening
 
-v2.1 is a security, reliability, and observability release. Every issue identified in the production audit has been resolved.
+v2.1 resolved all issues found in the production security audit.
 
 ### Security (Phase 1)
 

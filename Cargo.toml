@@ -5,6 +5,9 @@ members = [
     "crates/apollo-node",
     "crates/apollo-hub",
 ]
+# apollo-operator uses kube/k8s-openapi and must be built standalone:
+#   cd crates/apollo-operator && cargo build --release
+exclude = ["crates/apollo-operator"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -42,3 +45,5 @@ aes-gcm              = "0.10"
 hkdf                 = "0.12"
 base64               = "0.22"
 tokio-util           = { version = "0.7", features = ["rt"] }
+futures              = "0.3"
+tokio-stream         = { version = "0.1", features = ["sync"] }

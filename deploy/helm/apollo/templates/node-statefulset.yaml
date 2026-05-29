@@ -1,0 +1,189 @@
+{{/*
+  apollo-node StatefulSet
+  Runs the agent execution engine + REST API.
+  State lives in /home/apollo/.apollo (mounted PVC).
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "apollo.node.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "apollo.componentLabels" (dict "root" . "component" "node") | nindent 4 }}
+spec:
+  serviceName: {{ include "apollo.node.fullname" . }}-headless
+  replicas: {{ .Values.node.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "apollo.componentSelectorLabels" (dict "root" . "component" "node") | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        {{- include "apollo.componentLabels" (dict "root" . "component" "node") | nindent 8 }}
+      {{- with .Values.node.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "apollo.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "apollo.serviceAccountName" . }}
+      {{- with .Values.node.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        # Ensure the base-dir exists and is owned by the apollo user (uid 1000)
+        - name: init-basedir
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "mkdir -p /apollo-data && chown -R 1000:1000 /apollo-data"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+          volumeMounts:
+            - name: apollo-data
+              mountPath: /apollo-data
+      containers:
+        - name: apollo-node
+          image: {{ include "apollo.imageRegistry" . }}{{ .Values.node.image.repository }}:{{ .Values.node.image.tag }}
+          imagePullPolicy: {{ .Values.node.image.pullPolicy }}
+          {{- with .Values.node.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - apollo
+            - node
+            - start
+            - --base-dir
+            - /home/apollo/.apollo
+            - --listen
+            {{- if .Values.node.tls.enabled }}
+            - "0.0.0.0:8443"
+            {{- else }}
+            - "0.0.0.0:8080"
+            {{- end }}
+            - --region
+            - {{ .Values.node.region | quote }}
+            {{- if .Values.node.webhookUrl }}
+            - --webhook-url
+            - {{ .Values.node.webhookUrl | quote }}
+            {{- end }}
+            {{- if .Values.node.tls.enabled }}
+            - --tls-cert
+            - /etc/apollo/tls/tls.crt
+            - --tls-key
+            - /etc/apollo/tls/tls.key
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ if .Values.node.tls.enabled }}8443{{ else }}8080{{ end }}
+              protocol: TCP
+          env:
+            # ── Core secrets ────────────────────────────────────────────────
+            - name: APOLLO_SECRET_KEYS
+              {{- if .Values.node.secretKeysSecretRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.node.secretKeysSecretRef.name }}
+                  key: {{ .Values.node.secretKeysSecretRef.key }}
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "apollo.secretName" . }}
+                  key: secret-keys
+              {{- end }}
+            - name: APOLLO_JWT_SECRET
+              {{- if .Values.node.jwtSecretRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.node.jwtSecretRef.name }}
+                  key: {{ .Values.node.jwtSecretRef.key }}
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "apollo.secretName" . }}
+                  key: jwt-secret
+              {{- end }}
+            # ── Runtime tuning ───────────────────────────────────────────────
+            - name: RUST_LOG
+              value: "info"
+            - name: RUST_BACKTRACE
+              value: "1"
+            - name: APOLLO_REGION
+              value: {{ .Values.node.region | quote }}
+            {{- if .Values.node.webhookUrl }}
+            - name: APOLLO_WEBHOOK_URL
+              value: {{ .Values.node.webhookUrl | quote }}
+            {{- end }}
+            {{- with .Values.node.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.node.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.node.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.node.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.node.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: apollo-data
+              mountPath: /home/apollo/.apollo
+            {{- if .Values.node.tls.enabled }}
+            - name: tls
+              mountPath: /etc/apollo/tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if .Values.node.tls.enabled }}
+        - name: tls
+          secret:
+            {{- if .Values.node.tls.secretName }}
+            secretName: {{ .Values.node.tls.secretName }}
+            {{- else }}
+            secretName: {{ include "apollo.node.fullname" . }}-tls
+            {{- end }}
+        {{- end }}
+      {{- with .Values.node.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.node.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.node.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.node.persistence.enabled }}
+  {{- if not .Values.node.persistence.existingClaim }}
+  volumeClaimTemplates:
+    - metadata:
+        name: apollo-data
+        labels:
+          {{- include "apollo.componentSelectorLabels" (dict "root" . "component" "node") | nindent 10 }}
+      spec:
+        accessModes:
+          - {{ .Values.node.persistence.accessMode | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.node.persistence.size | quote }}
+        {{- include "apollo.storageClass" (dict "root" . "storageClass" .Values.node.persistence.storageClass) | nindent 8 }}
+  {{- end }}
+  {{- end }}

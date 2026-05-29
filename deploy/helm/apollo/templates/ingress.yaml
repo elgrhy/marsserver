@@ -1,0 +1,47 @@
+{{/*
+  Ingress
+  Rendered only when ingress.enabled = true.
+  Supports routing to both apollo-node and apollo-hub via path-based or host-based rules.
+*/}}
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "apollo.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "apollo.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                {{- if eq .service "hub" }}
+                name: {{ include "apollo.hub.fullname" $ }}
+                port:
+                  name: http
+                {{- else }}
+                name: {{ include "apollo.node.fullname" $ }}
+                port:
+                  name: http
+                {{- end }}
+          {{- end }}
+    {{- end }}
+{{- end }}

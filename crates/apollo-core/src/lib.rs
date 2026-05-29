@@ -3,6 +3,7 @@
 //! v1.2: execution, security, metering, fleet, webhooks
 //! v2.0: observability, policy, health intelligence, memory,
 //!        model routing, scheduler, orchestration
+//! v2.2: alerting, agent-to-agent messaging, vector memory search
 
 // ── Execution layer (v1.x) ────────────────────────────────────────────────────
 pub mod types;
@@ -40,6 +41,14 @@ pub mod orchestration;
 /// Automatic architecture selection — chooses Deterministic / SingleAgent / MultiAgent
 /// from DAG topology, governance constraints, error tolerance, and tool diversity.
 pub mod arch_selector;
+
+// ── Platform layer (v2.2) ─────────────────────────────────────────────────────
+
+/// Real-time alert rules with Slack, PagerDuty, and webhook delivery.
+pub mod alerting;
+
+/// Agent-to-agent topic-based pub/sub messaging bus.
+pub mod messaging;
 
 #[cfg(test)]
 mod tests;

@@ -1,0 +1,49 @@
+{
+  "name": "@apollo-platform/sdk",
+  "version": "2.2.0",
+  "description": "TypeScript client SDK for the Apollo AI Agent Platform",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/**/*",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "lint": "eslint src --ext .ts"
+  },
+  "keywords": [
+    "apollo",
+    "agent",
+    "ai",
+    "llm",
+    "sdk",
+    "platform"
+  ],
+  "author": "Apollo Platform Contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/elgrhy/apollo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elgrhy/apollo.git",
+    "directory": "sdks/node"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}

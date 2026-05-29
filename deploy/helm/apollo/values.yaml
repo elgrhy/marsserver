@@ -1,0 +1,281 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Apollo AI Agent Platform — Helm Values (v2.2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Global settings shared across all components
+global:
+  # Optional prefix for all image pulls, e.g. "my-registry.example.com/"
+  imageRegistry: ""
+  # List of pull-secret names to attach to every pod, e.g. ["regcred"]
+  imagePullSecrets: []
+  # Default StorageClass; overrides per-component storageClass when set
+  storageClass: ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# apollo-node — Agent execution engine + REST API
+# ─────────────────────────────────────────────────────────────────────────────
+node:
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/elgrhydev/apollo-node
+    tag: "2.2.0"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    # HTTP port (set tls.enabled=true for 8443)
+    port: 8080
+    # Uncomment for LoadBalancer / NodePort
+    # nodePort: 30080
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+
+  # Persistent volume for .apollo/ state directory
+  persistence:
+    enabled: true
+    size: "20Gi"
+    # Defaults to global.storageClass when empty
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    # Supply an existing PVC name to skip provisioning
+    existingClaim: ""
+
+  # ── Authentication ──────────────────────────────────────────────────────────
+  # Comma-separated API keys for X-Apollo-Key header (key rotation supported)
+  # RECOMMENDED: store in a pre-created K8s Secret and reference it below.
+  secretKeys: ""
+
+  # Reference an existing Secret instead of embedding keys in values.
+  # secretKeysSecretRef:
+  #   name: apollo-credentials
+  #   key: secret-keys
+
+  # HS256 JWT signing secret
+  jwtSecret: ""
+
+  # jwtSecretRef:
+  #   name: apollo-credentials
+  #   key: jwt-secret
+
+  # ── Node identity & networking ──────────────────────────────────────────────
+  region: "us-east-1"
+
+  # Outbound webhook for lifecycle events (AGENT_START, AGENT_STOP, etc.)
+  webhookUrl: ""
+
+  # ── TLS ────────────────────────────────────────────────────────────────────
+  tls:
+    enabled: false
+    # Name of a TLS Secret with tls.crt / tls.key; created externally (cert-manager, etc.)
+    secretName: ""
+    # Alternatively, inline PEM (base64-encoded). Not recommended for production.
+    cert: ""
+    key: ""
+
+  # ── Probes ─────────────────────────────────────────────────────────────────
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  # ── Extra pod settings ──────────────────────────────────────────────────────
+  podAnnotations: {}
+  podSecurityContext:
+    fsGroup: 1000
+    runAsNonRoot: true
+    runAsUser: 1000
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop:
+        - ALL
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Extra environment variables injected into the node container
+  extraEnv: []
+  # - name: FOO
+  #   value: bar
+
+  extraEnvFrom: []
+  # - secretRef:
+  #     name: my-extra-secret
+
+# ─────────────────────────────────────────────────────────────────────────────
+# apollo-hub — Fleet coordinator
+# ─────────────────────────────────────────────────────────────────────────────
+hub:
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/elgrhydev/apollo-hub
+    tag: "2.2.0"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 9191
+
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+
+  # Internal API key for hub↔node communication (X-Hub-Key header)
+  hubKey: ""
+
+  # hubKeySecretRef:
+  #   name: apollo-credentials
+  #   key: hub-key
+
+  # Auto-scale webhook fires when fleet utilisation exceeds scaleThreshold
+  scaleThreshold: "0.80"
+  webhookUrl: ""
+
+  livenessProbe:
+    httpGet:
+      path: /summary
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /summary
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  podAnnotations: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  extraEnv: []
+  extraEnvFrom: []
+
+# ─────────────────────────────────────────────────────────────────────────────
+# apollo-operator — Kubernetes operator (ApolloAgent CRD controller)
+# ─────────────────────────────────────────────────────────────────────────────
+operator:
+  enabled: true
+
+  image:
+    repository: ghcr.io/elgrhydev/apollo-operator
+    tag: "2.2.0"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+  # Namespace(s) the operator watches. Empty = all namespaces (cluster-scoped).
+  watchNamespace: ""
+
+  podAnnotations: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  extraEnv: []
+  extraEnvFrom: []
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ServiceAccount
+# ─────────────────────────────────────────────────────────────────────────────
+serviceAccount:
+  # Create a dedicated ServiceAccount; required for operator RBAC.
+  create: true
+  # Override the generated name
+  name: ""
+  annotations: {}
+  # Automount API credentials (needed by operator, harmless for others)
+  automountServiceAccountToken: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress
+# ─────────────────────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  hosts:
+    - host: apollo.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          # Which backend service: node | hub
+          service: node
+  tls:
+    - secretName: apollo-tls
+      hosts:
+        - apollo.example.com
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Horizontal Pod Autoscaler (node only)
+# ─────────────────────────────────────────────────────────────────────────────
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80

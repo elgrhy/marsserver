@@ -1,0 +1,1772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Apollo AI Agent Platform — Dashboard</title>
+<style>
+  /* ── Reset & Base ─────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:          #0f1117;
+    --bg-card:     #1a1d27;
+    --bg-card2:    #1f2333;
+    --bg-hover:    #252a3a;
+    --border:      #2a2f45;
+    --accent:      #4f8ef7;
+    --accent-dim:  #2d5ab5;
+    --green:       #22c55e;
+    --yellow:      #eab308;
+    --red:         #ef4444;
+    --orange:      #f97316;
+    --text:        #e2e8f0;
+    --text-muted:  #7b8ab8;
+    --text-dim:    #4a5578;
+    --font-mono:   'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+    --font-sans:   'Inter', system-ui, -apple-system, sans-serif;
+    --radius:      8px;
+    --radius-sm:   4px;
+    --shadow:      0 4px 24px rgba(0,0,0,.45);
+    --sidebar-w:   220px;
+    --header-h:    56px;
+    --transition:  all .18s ease;
+  }
+
+  body.light {
+    --bg:          #f0f2f8;
+    --bg-card:     #ffffff;
+    --bg-card2:    #f7f8fc;
+    --bg-hover:    #eef0f8;
+    --border:      #d1d5e8;
+    --text:        #1a1d2e;
+    --text-muted:  #5a6282;
+    --text-dim:    #9099bb;
+    --shadow:      0 4px 24px rgba(0,0,0,.12);
+  }
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    font-size: 14px;
+    line-height: 1.5;
+    transition: background .25s, color .25s;
+  }
+
+  /* ── Scrollbar ────────────────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ── Header ───────────────────────────────────────────────────────── */
+  header {
+    height: var(--header-h);
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 16px;
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    box-shadow: 0 1px 12px rgba(0,0,0,.3);
+  }
+
+  .logo {
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: .02em;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .logo-icon {
+    width: 28px; height: 28px;
+    background: linear-gradient(135deg, var(--accent), #7c3aed);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    color: #fff;
+    font-weight: 800;
+  }
+
+  .logo-version {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-top: 1px;
+  }
+
+  header .spacer { flex: 1; }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .conn-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .conn-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: background .3s;
+  }
+
+  .conn-dot.connected    { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .conn-dot.disconnected { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+
+  .refresh-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .countdown {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+    min-width: 20px;
+    text-align: right;
+  }
+
+  .refresh-ring {
+    width: 18px; height: 18px;
+    position: relative;
+  }
+
+  .refresh-ring svg {
+    width: 18px; height: 18px;
+    transform: rotate(-90deg);
+  }
+
+  .refresh-ring circle {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 2;
+  }
+
+  .refresh-ring .progress {
+    stroke: var(--accent);
+    stroke-dasharray: 44;
+    stroke-dashoffset: 44;
+    transition: stroke-dashoffset 1s linear;
+  }
+
+  /* ── Buttons ──────────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-card2);
+    color: var(--text);
+    font-size: 12px;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    transition: var(--transition);
+    white-space: nowrap;
+  }
+
+  .btn:hover { background: var(--bg-hover); border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-dim); border-color: var(--accent-dim); }
+
+  /* ── Layout ───────────────────────────────────────────────────────── */
+  .layout {
+    display: flex;
+    flex: 1;
+    margin-top: var(--header-h);
+    min-height: calc(100vh - var(--header-h));
+  }
+
+  /* ── Sidebar ──────────────────────────────────────────────────────── */
+  .sidebar {
+    width: var(--sidebar-w);
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
+    position: fixed;
+    top: var(--header-h);
+    bottom: 0;
+    left: 0;
+    overflow-y: auto;
+    padding: 16px 0;
+    z-index: 50;
+  }
+
+  .nav-section {
+    margin-bottom: 4px;
+  }
+
+  .nav-label {
+    padding: 6px 16px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 16px;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    transition: var(--transition);
+    border-left: 3px solid transparent;
+    margin: 1px 0;
+  }
+
+  .nav-item:hover { background: var(--bg-hover); color: var(--text); }
+
+  .nav-item.active {
+    background: rgba(79,142,247,.12);
+    color: var(--accent);
+    border-left-color: var(--accent);
+  }
+
+  .nav-icon { font-size: 15px; width: 18px; text-align: center; }
+
+  .nav-badge {
+    margin-left: auto;
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 10px;
+    min-width: 18px;
+    text-align: center;
+    display: none;
+  }
+
+  .nav-badge.visible { display: inline-block; }
+
+  /* ── Main content ─────────────────────────────────────────────────── */
+  .main {
+    margin-left: var(--sidebar-w);
+    flex: 1;
+    padding: 24px;
+    overflow-y: auto;
+    max-width: calc(100vw - var(--sidebar-w));
+  }
+
+  /* ── Tabs / Sections ──────────────────────────────────────────────── */
+  .section { display: none; }
+  .section.active { display: block; }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+  }
+
+  .section-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .section-subtitle {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  /* ── Stat cards ───────────────────────────────────────────────────── */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    transition: var(--transition);
+  }
+
+  .stat-card:hover { border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow); }
+
+  .stat-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+
+  .stat-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text);
+    font-family: var(--font-mono);
+    line-height: 1;
+  }
+
+  .stat-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 6px;
+  }
+
+  .stat-accent { color: var(--accent); }
+  .stat-green  { color: var(--green); }
+  .stat-yellow { color: var(--yellow); }
+  .stat-red    { color: var(--red); }
+
+  /* ── Cards ────────────────────────────────────────────────────────── */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+
+  .card-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-card2);
+  }
+
+  .card-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .card-body { padding: 20px; }
+
+  /* ── Tables ───────────────────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  thead th {
+    text-align: left;
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-card2);
+    white-space: nowrap;
+  }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background .12s;
+  }
+
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--bg-hover); }
+
+  tbody td {
+    padding: 10px 14px;
+    color: var(--text);
+    vertical-align: middle;
+  }
+
+  .mono { font-family: var(--font-mono); font-size: 12px; }
+
+  /* ── Health score ─────────────────────────────────────────────────── */
+  .score-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+  }
+
+  .score-green  { background: rgba(34,197,94,.15);  color: var(--green);  }
+  .score-yellow { background: rgba(234,179,8,.15);  color: var(--yellow); }
+  .score-red    { background: rgba(239,68,68,.15);  color: var(--red);    }
+
+  /* ── Health grid ──────────────────────────────────────────────────── */
+  .health-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+  }
+
+  .health-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    transition: var(--transition);
+  }
+
+  .health-card:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+
+  .health-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+
+  .health-agent {
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  .health-tenant {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    font-family: var(--font-mono);
+  }
+
+  .health-bar-wrap {
+    background: var(--border);
+    border-radius: 3px;
+    height: 5px;
+    margin: 10px 0 8px;
+    overflow: hidden;
+  }
+
+  .health-bar {
+    height: 100%;
+    border-radius: 3px;
+    transition: width .5s ease;
+  }
+
+  .health-bar.green  { background: var(--green); }
+  .health-bar.yellow { background: var(--yellow); }
+  .health-bar.red    { background: var(--red); }
+
+  .health-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .crash-badge {
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-weight: 600;
+    background: rgba(239,68,68,.15);
+    color: var(--red);
+    margin-top: 8px;
+    display: inline-block;
+  }
+
+  /* ── Badges / Tags ────────────────────────────────────────────────── */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .02em;
+  }
+
+  .badge-green  { background: rgba(34,197,94,.15);  color: var(--green); }
+  .badge-red    { background: rgba(239,68,68,.15);  color: var(--red); }
+  .badge-yellow { background: rgba(234,179,8,.15);  color: var(--yellow); }
+  .badge-blue   { background: rgba(79,142,247,.15); color: var(--accent); }
+  .badge-gray   { background: rgba(123,138,184,.15); color: var(--text-muted); }
+
+  /* ── Settings panel ───────────────────────────────────────────────── */
+  .settings-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.6);
+    z-index: 200;
+    backdrop-filter: blur(4px);
+  }
+
+  .settings-overlay.open { display: flex; align-items: center; justify-content: center; }
+
+  .settings-panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    width: 460px;
+    max-width: 95vw;
+    box-shadow: var(--shadow);
+  }
+
+  .settings-title {
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .close-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: var(--transition);
+  }
+
+  .close-btn:hover { background: var(--bg-hover); color: var(--text); }
+
+  .form-group { margin-bottom: 16px; }
+
+  .form-label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+  }
+
+  .form-input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 9px 12px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    outline: none;
+    transition: border-color .15s;
+  }
+
+  .form-input:focus { border-color: var(--accent); }
+  .form-input::placeholder { color: var(--text-dim); }
+
+  .settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+  }
+
+  /* ── Loading / empty ──────────────────────────────────────────────── */
+  .loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 40px;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .spinner {
+    width: 18px; height: 18px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty-state {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--text-muted);
+  }
+
+  .empty-icon { font-size: 32px; margin-bottom: 12px; }
+  .empty-text { font-size: 13px; }
+
+  .error-msg {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: rgba(239,68,68,.1);
+    border: 1px solid rgba(239,68,68,.3);
+    border-radius: var(--radius-sm);
+    color: var(--red);
+    font-size: 12px;
+    margin: 12px 0;
+  }
+
+  /* ── Progress bar (capacity) ──────────────────────────────────────── */
+  .progress-bar-wrap {
+    background: var(--border);
+    border-radius: 3px;
+    height: 4px;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .progress-bar {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+    transition: width .5s ease;
+  }
+
+  .progress-bar.warn { background: var(--yellow); }
+  .progress-bar.danger { background: var(--red); }
+
+  /* ── Capacity row ─────────────────────────────────────────────────── */
+  .capacity-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 10px;
+  }
+
+  .capacity-label { font-size: 11px; color: var(--text-muted); min-width: 90px; }
+  .capacity-pct { font-size: 11px; font-family: var(--font-mono); color: var(--text); min-width: 36px; text-align: right; }
+
+  /* ── Tooltip ──────────────────────────────────────────────────────── */
+  [data-tip] { position: relative; cursor: default; }
+
+  [data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1e2238;
+    color: var(--text);
+    font-size: 11px;
+    padding: 5px 9px;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .15s;
+    border: 1px solid var(--border);
+    z-index: 300;
+  }
+
+  [data-tip]:hover::after { opacity: 1; }
+
+  /* ── Chip ─────────────────────────────────────────────────────────── */
+  .chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    background: var(--bg-card2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+
+  /* ── Alert severity ───────────────────────────────────────────────── */
+  .sev-critical { color: var(--red); }
+  .sev-warning  { color: var(--yellow); }
+  .sev-info     { color: var(--accent); }
+
+  /* ── Topic card ───────────────────────────────────────────────────── */
+  .topic-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+
+  .topic-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    transition: var(--transition);
+  }
+
+  .topic-card:hover { border-color: var(--accent); }
+
+  .topic-name {
+    font-weight: 600;
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+
+  .topic-stats {
+    display: flex;
+    gap: 14px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* ── Timestamp ────────────────────────────────────────────────────── */
+  .ts {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* ── Models grid ──────────────────────────────────────────────────── */
+  .avail-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+
+  .avail-dot.yes { background: var(--green); }
+  .avail-dot.no  { background: var(--red); }
+
+  /* ── Responsive ───────────────────────────────────────────────────── */
+  @media (max-width: 900px) {
+    .sidebar { width: 56px; padding: 12px 0; }
+    .nav-label, .nav-item span:not(.nav-icon), .nav-badge { display: none; }
+    .nav-item { padding: 10px; justify-content: center; }
+    .main { margin-left: 56px; }
+  }
+</style>
+</head>
+<body class="dark">
+
+<!-- ── Settings Overlay ─────────────────────────────────────────────── -->
+<div class="settings-overlay" id="settingsOverlay">
+  <div class="settings-panel">
+    <div class="settings-title">
+      Settings
+      <button class="close-btn" onclick="closeSettings()">✕</button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Node URL</label>
+      <input class="form-input" id="cfgNodeUrl" type="url" placeholder="http://localhost:8080">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Hub URL</label>
+      <input class="form-input" id="cfgHubUrl" type="url" placeholder="http://localhost:9191">
+    </div>
+    <div class="form-group">
+      <label class="form-label">API Key (X-Apollo-Key)</label>
+      <input class="form-input" id="cfgApiKey" type="password" placeholder="your-secret-key">
+    </div>
+    <div class="form-group">
+      <label class="form-label">JWT Token (Bearer) — optional, overrides API Key</label>
+      <input class="form-input" id="cfgJwt" type="password" placeholder="eyJ...">
+    </div>
+    <div class="settings-actions">
+      <button class="btn" onclick="closeSettings()">Cancel</button>
+      <button class="btn primary" onclick="saveSettings()">Save &amp; Reconnect</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Header ───────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">A</div>
+    <div>
+      Apollo
+      <div class="logo-version">v2.2 · AI Agent Platform</div>
+    </div>
+  </div>
+
+  <div class="spacer"></div>
+
+  <div class="header-right">
+    <div class="conn-status">
+      <div class="conn-dot" id="connDot"></div>
+      <span id="connLabel">Connecting…</span>
+    </div>
+
+    <div class="refresh-wrap">
+      <span>Refresh in</span>
+      <span class="countdown" id="countdown">10</span>
+      <div class="refresh-ring">
+        <svg viewBox="0 0 18 18">
+          <circle cx="9" cy="9" r="7"/>
+          <circle class="progress" id="progressCircle" cx="9" cy="9" r="7"/>
+        </svg>
+      </div>
+    </div>
+
+    <button class="btn" onclick="refreshAll()" title="Refresh now">&#8635; Refresh</button>
+    <button class="btn" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">&#9788;</button>
+    <button class="btn" onclick="openSettings()">&#9881; Settings</button>
+  </div>
+</header>
+
+<!-- ── Layout ───────────────────────────────────────────────────────── -->
+<div class="layout">
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="nav-section">
+      <div class="nav-label">Platform</div>
+      <div class="nav-item active" onclick="showSection('fleet', this)">
+        <span class="nav-icon">&#9646;</span>
+        <span>Fleet Overview</span>
+      </div>
+      <div class="nav-item" onclick="showSection('agents', this)">
+        <span class="nav-icon">&#129302;</span>
+        <span>Agents</span>
+        <span class="nav-badge" id="badgeAgents">0</span>
+      </div>
+      <div class="nav-item" onclick="showSection('health', this)">
+        <span class="nav-icon">&#10084;</span>
+        <span>Health</span>
+        <span class="nav-badge" id="badgeHealth">0</span>
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">Observability</div>
+      <div class="nav-item" onclick="showSection('traces', this)">
+        <span class="nav-icon">&#127381;</span>
+        <span>Traces</span>
+      </div>
+      <div class="nav-item" onclick="showSection('usage', this)">
+        <span class="nav-icon">&#128200;</span>
+        <span>Usage</span>
+      </div>
+      <div class="nav-item" onclick="showSection('models', this)">
+        <span class="nav-icon">&#129704;</span>
+        <span>Models</span>
+      </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-label">Operations</div>
+      <div class="nav-item" onclick="showSection('alerts', this)">
+        <span class="nav-icon">&#9888;</span>
+        <span>Alerts</span>
+        <span class="nav-badge" id="badgeAlerts">0</span>
+      </div>
+      <div class="nav-item" onclick="showSection('messages', this)">
+        <span class="nav-icon">&#128172;</span>
+        <span>Messages</span>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+
+    <!-- ── Fleet Overview ───────────────────────────────────────────── -->
+    <div class="section active" id="section-fleet">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Fleet Overview</div>
+          <div class="section-subtitle">Real-time node and agent summary</div>
+        </div>
+      </div>
+
+      <div class="stat-grid" id="fleetStats">
+        <div class="stat-card"><div class="stat-label">Nodes Online</div><div class="stat-value stat-accent" id="statNodes">—</div><div class="stat-sub">Hub-reported</div></div>
+        <div class="stat-card"><div class="stat-label">Agents Running</div><div class="stat-value stat-green" id="statRunning">—</div><div class="stat-sub">Across all nodes</div></div>
+        <div class="stat-card"><div class="stat-label">Fleet Capacity</div><div class="stat-value" id="statCapacity">—</div><div class="stat-sub">CPU utilization</div></div>
+        <div class="stat-card"><div class="stat-label">Catalog</div><div class="stat-value stat-accent" id="statCatalog">—</div><div class="stat-sub">Registered agents</div></div>
+        <div class="stat-card"><div class="stat-label">Node Uptime</div><div class="stat-value" id="statUptime">—</div><div class="stat-sub">Since last start</div></div>
+        <div class="stat-card"><div class="stat-label">Total Tenants</div><div class="stat-value" id="statTenants">—</div><div class="stat-sub">With running agents</div></div>
+      </div>
+
+      <div class="card" id="fleetRegions">
+        <div class="card-header"><div class="card-title">Region Capacity</div></div>
+        <div class="card-body" id="fleetRegionsBody">
+          <div class="loading"><div class="spinner"></div> Loading regions…</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">Node Status</div></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Node URL</th><th>Region</th><th>Agents</th><th>CPU Util</th><th>Mem Util</th><th>Status</th></tr></thead>
+            <tbody id="nodeTable"><tr><td colspan="6"><div class="loading"><div class="spinner"></div> Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Agents ────────────────────────────────────────────────────── -->
+    <div class="section" id="section-agents">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Agents</div>
+          <div class="section-subtitle">All running agent instances</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Agent</th><th>Tenant</th><th>PID</th><th>Status</th><th>Health</th><th>Restarts</th><th>Started</th></tr></thead>
+            <tbody id="agentTable"><tr><td colspan="7"><div class="loading"><div class="spinner"></div> Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Health ────────────────────────────────────────────────────── -->
+    <div class="section" id="section-health">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Health Intelligence</div>
+          <div class="section-subtitle">Score per agent · green ≥80 · yellow 40-79 · red &lt;40</div>
+        </div>
+      </div>
+      <div class="health-grid" id="healthGrid">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+    </div>
+
+    <!-- ── Traces ────────────────────────────────────────────────────── -->
+    <div class="section" id="section-traces">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Distributed Traces</div>
+          <div class="section-subtitle">Step-level spans, token usage and cost</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Trace ID</th><th>Agent</th><th>Tenant</th><th>Spans</th><th>Tokens In</th><th>Tokens Out</th><th>Cost USD</th><th>Duration</th><th>Status</th></tr></thead>
+            <tbody id="traceTable"><tr><td colspan="9"><div class="loading"><div class="spinner"></div> Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Usage ─────────────────────────────────────────────────────── -->
+    <div class="section" id="section-usage">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Usage &amp; Metering</div>
+          <div class="section-subtitle">Compute consumption per tenant</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Tenant</th><th>CPU Seconds</th><th>Mem GB·s</th><th>Starts</th><th>Stops</th><th>Last Reset</th></tr></thead>
+            <tbody id="usageTable"><tr><td colspan="6"><div class="loading"><div class="spinner"></div> Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Models ────────────────────────────────────────────────────── -->
+    <div class="section" id="section-models">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Model Registry</div>
+          <div class="section-subtitle">Registered LLM models and routing metrics</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Model ID</th><th>Provider</th><th>Cost/M In</th><th>Cost/M Out</th><th>P50 ms</th><th>P99 ms</th><th>Tok/s</th><th>Context</th><th>Local</th><th>Avail</th></tr></thead>
+            <tbody id="modelTable"><tr><td colspan="10"><div class="loading"><div class="spinner"></div> Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Alerts ────────────────────────────────────────────────────── -->
+    <div class="section" id="section-alerts">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Alerts</div>
+          <div class="section-subtitle">Active rules and recent trigger history</div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:16px;">
+        <div class="card-header"><div class="card-title">Alert Rules</div></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Severity</th><th>Condition</th><th>Threshold</th><th>Enabled</th></tr></thead>
+            <tbody id="alertRulesTable"><tr><td colspan="5"><div class="loading"><div class="spinner"></div> Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">Alert History</div></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Rule</th><th>Severity</th><th>Value</th><th>Message</th></tr></thead>
+            <tbody id="alertHistoryTable"><tr><td colspan="5"><div class="loading"><div class="spinner"></div> Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Messages ──────────────────────────────────────────────────── -->
+    <div class="section" id="section-messages">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Message Bus</div>
+          <div class="section-subtitle">Active topics and recent messages</div>
+        </div>
+      </div>
+      <div class="topic-grid" id="topicGrid">
+        <div class="loading"><div class="spinner"></div> Loading…</div>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">Recent Messages</div></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Topic</th><th>From</th><th>To</th><th>Payload (truncated)</th></tr></thead>
+            <tbody id="msgTable"><tr><td colspan="5"><div class="loading"><div class="spinner"></div> Loading…</div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+/* ============================================================
+   APOLLO DASHBOARD — Vanilla JS
+   ============================================================ */
+
+// ── Config ──────────────────────────────────────────────────
+const CFG_DEFAULTS = {
+  nodeUrl: 'http://localhost:8080',
+  hubUrl:  'http://localhost:9191',
+  apiKey:  '',
+  jwt:     '',
+};
+
+let cfg = { ...CFG_DEFAULTS };
+
+function loadConfig() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('apolloCfg') || '{}');
+    cfg = { ...CFG_DEFAULTS, ...saved };
+  } catch (_) { cfg = { ...CFG_DEFAULTS }; }
+}
+
+function saveSettings() {
+  cfg.nodeUrl = document.getElementById('cfgNodeUrl').value.trim() || CFG_DEFAULTS.nodeUrl;
+  cfg.hubUrl  = document.getElementById('cfgHubUrl').value.trim()  || CFG_DEFAULTS.hubUrl;
+  cfg.apiKey  = document.getElementById('cfgApiKey').value.trim();
+  cfg.jwt     = document.getElementById('cfgJwt').value.trim();
+  localStorage.setItem('apolloCfg', JSON.stringify(cfg));
+  closeSettings();
+  refreshAll();
+}
+
+function openSettings() {
+  document.getElementById('cfgNodeUrl').value = cfg.nodeUrl;
+  document.getElementById('cfgHubUrl').value  = cfg.hubUrl;
+  document.getElementById('cfgApiKey').value  = cfg.apiKey;
+  document.getElementById('cfgJwt').value     = cfg.jwt;
+  document.getElementById('settingsOverlay').classList.add('open');
+}
+
+function closeSettings() {
+  document.getElementById('settingsOverlay').classList.remove('open');
+}
+
+// Close overlay on backdrop click
+document.getElementById('settingsOverlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeSettings();
+});
+
+// ── Theme ────────────────────────────────────────────────────
+function loadTheme() {
+  const t = localStorage.getItem('apolloTheme') || 'dark';
+  document.body.classList.toggle('light', t === 'light');
+  document.getElementById('themeBtn').textContent = t === 'light' ? '☾' : '☀';
+}
+
+function toggleTheme() {
+  const isLight = document.body.classList.toggle('light');
+  localStorage.setItem('apolloTheme', isLight ? 'light' : 'dark');
+  document.getElementById('themeBtn').textContent = isLight ? '☾' : '☀';
+}
+
+// ── Navigation ───────────────────────────────────────────────
+function showSection(id, el) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('section-' + id).classList.add('active');
+  el.classList.add('active');
+}
+
+// ── API Client ───────────────────────────────────────────────
+class ApolloAPI {
+  headers(extra = {}) {
+    const h = { 'Content-Type': 'application/json', ...extra };
+    if (cfg.jwt)    h['Authorization'] = 'Bearer ' + cfg.jwt;
+    else if (cfg.apiKey) h['X-Apollo-Key'] = cfg.apiKey;
+    return h;
+  }
+
+  async get(base, path) {
+    const r = await fetch(base + path, { headers: this.headers(), signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
+    return r.json();
+  }
+
+  node(path)  { return this.get(cfg.nodeUrl, path); }
+  hub(path)   { return this.get(cfg.hubUrl,  path); }
+}
+
+const api = new ApolloAPI();
+
+// ── Connection status ────────────────────────────────────────
+let connected = false;
+
+function setConnected(ok) {
+  connected = ok;
+  const dot   = document.getElementById('connDot');
+  const label = document.getElementById('connLabel');
+  if (ok) {
+    dot.className = 'conn-dot connected';
+    label.textContent = 'Connected';
+  } else {
+    dot.className = 'conn-dot disconnected';
+    label.textContent = 'Unreachable';
+  }
+}
+
+// ── Countdown & refresh ring ─────────────────────────────────
+const REFRESH_INTERVAL = 10;
+let countdown = REFRESH_INTERVAL;
+let refreshTimer;
+
+const circumference = 2 * Math.PI * 7; // r=7
+
+function tickCountdown() {
+  const circle = document.getElementById('progressCircle');
+  const label  = document.getElementById('countdown');
+  countdown--;
+  if (countdown < 0) {
+    countdown = REFRESH_INTERVAL;
+    refreshAll();
+  }
+  label.textContent = countdown;
+  const offset = circumference * (1 - countdown / REFRESH_INTERVAL);
+  circle.style.strokeDashoffset = circumference - offset;
+}
+
+function startTimer() {
+  clearInterval(refreshTimer);
+  document.getElementById('progressCircle').style.strokeDasharray  = circumference;
+  document.getElementById('progressCircle').style.strokeDashoffset = circumference;
+  countdown = REFRESH_INTERVAL;
+  document.getElementById('countdown').textContent = REFRESH_INTERVAL;
+  refreshTimer = setInterval(tickCountdown, 1000);
+}
+
+// ── State ─────────────────────────────────────────────────────
+let knownAgents = []; // [{agent_id, tenant_id}]
+
+// ── Helpers ──────────────────────────────────────────────────
+function fmtNum(n, decimals = 1) {
+  if (n == null || n === undefined) return '—';
+  if (typeof n === 'number') return n.toFixed(decimals);
+  return n;
+}
+
+function fmtCost(n) {
+  if (n == null) return '—';
+  return '$' + Number(n).toFixed(4);
+}
+
+function fmtTs(ms) {
+  if (!ms) return '—';
+  return new Date(ms).toLocaleString();
+}
+
+function fmtDuration(startMs, endMs) {
+  if (!startMs || !endMs) return '—';
+  const d = endMs - startMs;
+  if (d < 1000) return d + 'ms';
+  if (d < 60000) return (d / 1000).toFixed(1) + 's';
+  return (d / 60000).toFixed(1) + 'm';
+}
+
+function truncate(s, n = 60) {
+  if (!s) return '—';
+  const str = typeof s === 'object' ? JSON.stringify(s) : String(s);
+  return str.length > n ? str.slice(0, n) + '…' : str;
+}
+
+function scoreClass(s) {
+  if (s >= 80) return 'green';
+  if (s >= 40) return 'yellow';
+  return 'red';
+}
+
+function scorePill(s) {
+  const cls = scoreClass(s);
+  return `<span class="score-pill score-${cls}">${s}</span>`;
+}
+
+function loading(html) {
+  return `<tr><td colspan="99"><div class="loading"><div class="spinner"></div> ${html || 'Loading…'}</div></td></tr>`;
+}
+
+function emptyRow(msg, cols) {
+  return `<tr><td colspan="${cols}"><div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">${msg}</div></div></td></tr>`;
+}
+
+function errRow(msg, cols) {
+  return `<tr><td colspan="${cols}"><div class="error-msg">⚠ ${msg}</div></td></tr>`;
+}
+
+function setEl(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = html;
+}
+
+// ── SECTION: Fleet Overview ───────────────────────────────────
+async function refreshFleet() {
+  try {
+    let summary, nodes, regions, catalog, metrics;
+
+    // Try hub first, fall back to node /metrics
+    try {
+      [summary, nodes, regions, catalog] = await Promise.all([
+        api.hub('/summary'),
+        api.hub('/nodes/status'),
+        api.hub('/regions'),
+        api.hub('/catalog'),
+      ]);
+      setConnected(true);
+    } catch (_hubErr) {
+      try {
+        metrics = await api.node('/metrics');
+        setConnected(true);
+      } catch (nodeErr) {
+        setConnected(false);
+        throw nodeErr;
+      }
+    }
+
+    if (summary) {
+      setEl('statNodes',    summary.nodes_online ?? summary.node_count ?? '—');
+      setEl('statRunning',  summary.total_agents ?? summary.agents_running ?? '—');
+      const cap = summary.avg_cpu_pct ?? summary.fleet_capacity_pct;
+      setEl('statCapacity', cap != null ? Math.round(cap) + '%' : '—');
+      setEl('statCatalog',  summary.catalog_count ?? (catalog ? Object.keys(catalog).length : '—'));
+      setEl('statUptime',   '—');
+      // Count distinct tenants from node list
+      const tenantSet = new Set();
+      if (nodes) nodes.forEach(n => (n.tenants || []).forEach(t => tenantSet.add(t)));
+      setEl('statTenants', tenantSet.size || '—');
+    } else if (metrics) {
+      setEl('statNodes',    1);
+      setEl('statRunning',  metrics.agents_running ?? '—');
+      const cpu = metrics.cpu_pct ?? metrics.cpu_util_pct;
+      setEl('statCapacity', cpu != null ? Math.round(cpu) + '%' : '—');
+      setEl('statCatalog',  metrics.catalog_count ?? '—');
+      const up = metrics.uptime_secs;
+      if (up != null) {
+        const h = Math.floor(up / 3600), m = Math.floor((up % 3600) / 60);
+        setEl('statUptime', h + 'h ' + m + 'm');
+      } else {
+        setEl('statUptime', '—');
+      }
+      setEl('statTenants', metrics.tenant_count ?? '—');
+    }
+
+    // Region capacity
+    if (regions) {
+      const rows = Object.entries(regions).map(([r, d]) => {
+        const pct = Math.round((d.cpu_pct ?? d.utilization ?? 0));
+        const cls = pct > 80 ? 'danger' : pct > 60 ? 'warn' : '';
+        return `<div class="capacity-row">
+          <span class="capacity-label">${r}</span>
+          <div class="progress-bar-wrap"><div class="progress-bar ${cls}" style="width:${pct}%"></div></div>
+          <span class="capacity-pct">${pct}%</span>
+          <span class="chip">${d.node_count ?? '?'} nodes</span>
+        </div>`;
+      }).join('');
+      setEl('fleetRegionsBody', rows || '<div class="empty-state"><div class="empty-text">No region data</div></div>');
+    } else {
+      setEl('fleetRegionsBody', '<div class="empty-state"><div class="empty-text">Hub not available — showing single-node mode</div></div>');
+    }
+
+    // Node table
+    if (nodes && nodes.length > 0) {
+      const rows = nodes.map(n => {
+        const cpu = n.cpu_pct ?? n.cpu_util_pct ?? 0;
+        const mem = n.mem_pct ?? n.mem_util_pct ?? 0;
+        const ok  = n.status === 'healthy' || n.status === 'ok' || !n.status;
+        return `<tr>
+          <td class="mono">${n.url ?? n.node_url ?? '—'}</td>
+          <td><span class="chip">${n.region ?? '—'}</span></td>
+          <td>${n.agent_count ?? n.agents ?? '—'}</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div class="progress-bar-wrap" style="width:80px"><div class="progress-bar ${cpu>80?'danger':cpu>60?'warn':''}" style="width:${Math.min(cpu,100)}%"></div></div>
+              <span class="mono" style="font-size:11px">${Math.round(cpu)}%</span>
+            </div>
+          </td>
+          <td>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div class="progress-bar-wrap" style="width:80px"><div class="progress-bar ${mem>80?'danger':mem>60?'warn':''}" style="width:${Math.min(mem,100)}%"></div></div>
+              <span class="mono" style="font-size:11px">${Math.round(mem)}%</span>
+            </div>
+          </td>
+          <td><span class="badge ${ok?'badge-green':'badge-red'}">${ok?'Healthy':'Degraded'}</span></td>
+        </tr>`;
+      }).join('');
+      setEl('nodeTable', rows);
+    } else if (metrics) {
+      const cpu = metrics.cpu_pct ?? 0;
+      const mem = metrics.mem_pct ?? 0;
+      setEl('nodeTable', `<tr>
+        <td class="mono">${cfg.nodeUrl}</td>
+        <td><span class="chip">${metrics.region ?? 'local'}</span></td>
+        <td>${metrics.agents_running ?? '—'}</td>
+        <td>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div class="progress-bar-wrap" style="width:80px"><div class="progress-bar" style="width:${Math.min(cpu,100)}%"></div></div>
+            <span class="mono" style="font-size:11px">${Math.round(cpu)}%</span>
+          </div>
+        </td>
+        <td>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div class="progress-bar-wrap" style="width:80px"><div class="progress-bar" style="width:${Math.min(mem,100)}%"></div></div>
+            <span class="mono" style="font-size:11px">${Math.round(mem)}%</span>
+          </div>
+        </td>
+        <td><span class="badge badge-green">Healthy</span></td>
+      </tr>`);
+    } else {
+      setEl('nodeTable', emptyRow('No node data available', 6));
+    }
+
+  } catch (err) {
+    setEl('nodeTable', errRow(err.message, 6));
+    setEl('fleetRegionsBody', `<div class="error-msg">⚠ ${err.message}</div>`);
+  }
+}
+
+// ── SECTION: Agents ───────────────────────────────────────────
+async function refreshAgents() {
+  try {
+    const [list, health] = await Promise.allSettled([
+      api.node('/agents/list'),
+      api.node('/health/fleet/summary'),
+    ]);
+
+    const agents  = list.value   ?? [];
+    const healthM = health.value ?? {};
+
+    // Collect agent+tenant combos for traces
+    knownAgents = [];
+
+    if (agents.length === 0) {
+      setEl('agentTable', emptyRow('No agents registered', 7));
+      setEl('badgeAgents', '0');
+      return;
+    }
+
+    let running = 0;
+    const rows = agents.map(a => {
+      const isRunning = a.status === 'running' || !!a.pid;
+      if (isRunning) {
+        running++;
+        if (a.tenant_id && a.name) {
+          knownAgents.push({ agent: a.name, tenant: a.tenant_id });
+        }
+      }
+
+      // Try to get health score
+      const hKey = `${a.tenant_id ?? 'default'}/${a.name}`;
+      const hInfo = healthM[hKey] ?? healthM[a.name] ?? null;
+      const score = hInfo ? (hInfo.score ?? hInfo.health_score ?? null) : null;
+      const scoreTd = score != null ? scorePill(score) : '<span style="color:var(--text-dim)">—</span>';
+
+      const statusBadge = isRunning
+        ? '<span class="badge badge-green">running</span>'
+        : a.status === 'stopped'
+          ? '<span class="badge badge-gray">stopped</span>'
+          : `<span class="badge badge-yellow">${a.status ?? 'unknown'}</span>`;
+
+      return `<tr>
+        <td><strong>${a.name ?? '—'}</strong><br><span class="mono" style="font-size:10px;color:var(--text-muted)">${a.version ?? ''}</span></td>
+        <td class="mono">${a.tenant_id ?? '—'}</td>
+        <td class="mono">${a.pid ?? '—'}</td>
+        <td>${statusBadge}</td>
+        <td>${scoreTd}</td>
+        <td class="mono">${a.restarts ?? a.restart_count ?? '0'}</td>
+        <td class="ts">${a.started_at ? fmtTs(a.started_at) : '—'}</td>
+      </tr>`;
+    }).join('');
+
+    setEl('agentTable', rows);
+    setEl('badgeAgents', String(running));
+    if (running > 0) document.getElementById('badgeAgents').classList.add('visible');
+    else document.getElementById('badgeAgents').classList.remove('visible');
+
+    setConnected(true);
+  } catch (err) {
+    setConnected(false);
+    setEl('agentTable', errRow(err.message, 7));
+  }
+}
+
+// ── SECTION: Health ───────────────────────────────────────────
+async function refreshHealth() {
+  try {
+    const data = await api.node('/health/fleet/summary');
+    const grid = document.getElementById('healthGrid');
+    const entries = Object.entries(data);
+
+    if (entries.length === 0) {
+      grid.innerHTML = `<div class="empty-state"><div class="empty-icon">💚</div><div class="empty-text">No health data collected yet</div></div>`;
+      return;
+    }
+
+    let critical = 0;
+    grid.innerHTML = entries.map(([key, info]) => {
+      const parts  = key.split('/');
+      const agent  = parts[1] ?? key;
+      const tenant = parts[0] ?? '—';
+      const score  = info.score ?? info.health_score ?? 0;
+      const cls    = scoreClass(score);
+      if (cls === 'red') critical++;
+
+      const crash   = info.crash_pattern ?? info.pattern ?? '';
+      const mem     = info.memory_trend ?? '';
+      const restarts = info.crash_count ?? info.restarts ?? 0;
+
+      return `<div class="health-card">
+        <div class="health-card-header">
+          <div>
+            <div class="health-agent">${agent}</div>
+            <div class="health-tenant">${tenant}</div>
+          </div>
+          ${scorePill(score)}
+        </div>
+        <div class="health-bar-wrap">
+          <div class="health-bar ${cls}" style="width:${score}%"></div>
+        </div>
+        <div class="health-meta">
+          <span>${restarts} restarts</span>
+          <span>${mem ? 'mem: ' + mem : ''}</span>
+        </div>
+        ${crash ? `<div class="crash-badge">⚡ ${crash}</div>` : ''}
+      </div>`;
+    }).join('');
+
+    if (critical > 0) {
+      document.getElementById('badgeHealth').textContent = String(critical);
+      document.getElementById('badgeHealth').classList.add('visible');
+    } else {
+      document.getElementById('badgeHealth').classList.remove('visible');
+    }
+
+    setConnected(true);
+  } catch (err) {
+    setConnected(false);
+    document.getElementById('healthGrid').innerHTML = `<div class="error-msg">⚠ ${err.message}</div>`;
+  }
+}
+
+// ── SECTION: Traces ───────────────────────────────────────────
+async function refreshTraces() {
+  try {
+    // Gather trace summaries for known agent+tenant combos
+    const combos = knownAgents.length > 0 ? knownAgents : [{ agent: 'default', tenant: 'default' }];
+
+    const results = await Promise.allSettled(
+      combos.map(c => api.node(`/traces/${c.tenant}/${c.agent}`).then(d => ({ ...c, traces: d })))
+    );
+
+    const allTraces = [];
+    results.forEach(r => {
+      if (r.status === 'fulfilled' && Array.isArray(r.value.traces)) {
+        r.value.traces.forEach(t => allTraces.push({ ...t, _agent: r.value.agent, _tenant: r.value.tenant }));
+      }
+    });
+
+    if (allTraces.length === 0) {
+      setEl('traceTable', emptyRow('No traces recorded yet', 9));
+      return;
+    }
+
+    // Sort newest first
+    allTraces.sort((a, b) => (b.start_ts_ms ?? 0) - (a.start_ts_ms ?? 0));
+
+    const rows = allTraces.slice(0, 100).map(t => {
+      const dur = fmtDuration(t.start_ts_ms, t.end_ts_ms);
+      const status = t.status ?? 'unknown';
+      const badgeCls = status === 'ok' || status === 'completed' ? 'badge-green'
+                     : status === 'error' ? 'badge-red' : 'badge-yellow';
+      return `<tr>
+        <td class="mono" style="font-size:11px">${truncate(t.trace_id ?? t.id, 18)}</td>
+        <td>${t._agent}</td>
+        <td class="mono">${t._tenant}</td>
+        <td class="mono">${t.span_count ?? t.spans ?? '—'}</td>
+        <td class="mono">${t.total_input_tokens ?? t.input_tokens ?? '—'}</td>
+        <td class="mono">${t.total_output_tokens ?? t.output_tokens ?? '—'}</td>
+        <td class="mono">${t.total_cost_usd != null ? fmtCost(t.total_cost_usd) : '—'}</td>
+        <td class="mono">${dur}</td>
+        <td><span class="badge ${badgeCls}">${status}</span></td>
+      </tr>`;
+    }).join('');
+
+    setEl('traceTable', rows);
+    setConnected(true);
+  } catch (err) {
+    setConnected(false);
+    setEl('traceTable', errRow(err.message, 9));
+  }
+}
+
+// ── SECTION: Usage ────────────────────────────────────────────
+async function refreshUsage() {
+  try {
+    const data = await api.node('/usage');
+    const entries = typeof data === 'object' && !Array.isArray(data) ? Object.entries(data) : [];
+
+    if (entries.length === 0) {
+      setEl('usageTable', emptyRow('No usage data recorded', 6));
+      return;
+    }
+
+    const rows = entries.map(([tenantId, u]) => {
+      const cpu  = typeof u.cpu_seconds === 'number' ? u.cpu_seconds.toFixed(2) : (u.cpu_seconds ?? '—');
+      const mem  = typeof u.memory_gb_seconds === 'number' ? u.memory_gb_seconds.toFixed(4) : (u.memory_gb_seconds ?? '—');
+      return `<tr>
+        <td class="mono">${tenantId}</td>
+        <td class="mono">${cpu}</td>
+        <td class="mono">${mem}</td>
+        <td class="mono">${u.starts ?? u.agent_starts ?? '—'}</td>
+        <td class="mono">${u.stops ?? u.agent_stops ?? '—'}</td>
+        <td class="ts">${u.last_reset ? fmtTs(u.last_reset) : '—'}</td>
+      </tr>`;
+    }).join('');
+
+    setEl('usageTable', rows);
+    setConnected(true);
+  } catch (err) {
+    setConnected(false);
+    setEl('usageTable', errRow(err.message, 6));
+  }
+}
+
+// ── SECTION: Models ───────────────────────────────────────────
+async function refreshModels() {
+  try {
+    const data = await api.node('/models');
+    const models = Array.isArray(data) ? data
+                 : data.models ? data.models
+                 : Object.values(data);
+
+    if (models.length === 0) {
+      setEl('modelTable', emptyRow('No models registered', 10));
+      return;
+    }
+
+    const rows = models.map(m => `<tr>
+      <td class="mono"><strong>${m.model_id ?? m.id ?? '—'}</strong></td>
+      <td><span class="chip">${m.provider ?? '—'}</span></td>
+      <td class="mono">$${fmtNum(m.cost_per_m_input ?? m.cost_input, 2)}</td>
+      <td class="mono">$${fmtNum(m.cost_per_m_output ?? m.cost_output, 2)}</td>
+      <td class="mono">${m.latency_p50_ms ?? '—'}</td>
+      <td class="mono">${m.latency_p99_ms ?? '—'}</td>
+      <td class="mono">${m.throughput_tok_s ?? '—'}</td>
+      <td class="mono">${m.context_window ? (m.context_window / 1000) + 'K' : '—'}</td>
+      <td>${m.is_local ? '<span class="badge badge-blue">local</span>' : '<span class="badge badge-gray">cloud</span>'}</td>
+      <td><span class="avail-dot ${m.is_available !== false ? 'yes' : 'no'}"></span></td>
+    </tr>`).join('');
+
+    setEl('modelTable', rows);
+    setConnected(true);
+  } catch (err) {
+    setConnected(false);
+    setEl('modelTable', errRow(err.message, 10));
+  }
+}
+
+// ── SECTION: Alerts ───────────────────────────────────────────
+async function refreshAlerts() {
+  const [rulesRes, histRes] = await Promise.allSettled([
+    api.node('/alerts/rules'),
+    api.node('/alerts/history'),
+  ]);
+
+  // Rules
+  try {
+    const rules = rulesRes.status === 'fulfilled'
+      ? (Array.isArray(rulesRes.value) ? rulesRes.value : (rulesRes.value.rules ?? []))
+      : null;
+
+    if (!rules) throw new Error(rulesRes.reason?.message ?? 'Failed');
+    if (rules.length === 0) {
+      setEl('alertRulesTable', emptyRow('No alert rules configured', 5));
+    } else {
+      const sevClasses = { critical: 'sev-critical', warning: 'sev-warning', info: 'sev-info' };
+      const rows = rules.map(r => `<tr>
+        <td><strong>${r.name ?? r.rule_name ?? '—'}</strong></td>
+        <td class="${sevClasses[r.severity] ?? ''}">${r.severity ?? '—'}</td>
+        <td class="mono">${r.metric ?? r.condition_metric ?? '—'}</td>
+        <td class="mono">${r.threshold ?? '—'} ${r.operator ?? ''}</td>
+        <td>${r.enabled !== false ? '<span class="badge badge-green">on</span>' : '<span class="badge badge-gray">off</span>'}</td>
+      </tr>`).join('');
+      setEl('alertRulesTable', rows);
+
+      const firing = rules.filter(r => r.firing || r.active).length;
+      if (firing > 0) {
+        document.getElementById('badgeAlerts').textContent = String(firing);
+        document.getElementById('badgeAlerts').classList.add('visible');
+      } else {
+        document.getElementById('badgeAlerts').classList.remove('visible');
+      }
+    }
+  } catch (err) {
+    setEl('alertRulesTable', errRow('Alerts endpoint not available: ' + err.message, 5));
+  }
+
+  // History
+  try {
+    const hist = histRes.status === 'fulfilled'
+      ? (Array.isArray(histRes.value) ? histRes.value : (histRes.value.history ?? histRes.value.events ?? []))
+      : null;
+
+    if (!hist) throw new Error(histRes.reason?.message ?? 'Failed');
+    if (hist.length === 0) {
+      setEl('alertHistoryTable', emptyRow('No alert history', 5));
+    } else {
+      const sevClasses = { critical: 'sev-critical', warning: 'sev-warning', info: 'sev-info' };
+      const rows = hist.slice(0, 50).map(h => `<tr>
+        <td class="ts">${fmtTs(h.triggered_at ?? h.ts ?? h.timestamp)}</td>
+        <td>${h.rule ?? h.rule_name ?? '—'}</td>
+        <td class="${sevClasses[h.severity] ?? ''}">${h.severity ?? '—'}</td>
+        <td class="mono">${h.value ?? '—'}</td>
+        <td>${truncate(h.message ?? h.msg, 80)}</td>
+      </tr>`).join('');
+      setEl('alertHistoryTable', rows);
+    }
+  } catch (err) {
+    setEl('alertHistoryTable', errRow('Alert history not available: ' + err.message, 5));
+  }
+}
+
+// ── SECTION: Messages ─────────────────────────────────────────
+async function refreshMessages() {
+  try {
+    const data = await api.node('/messages');
+    const topics = Array.isArray(data) ? data
+                 : data.topics ? data.topics
+                 : typeof data === 'object' ? Object.values(data)
+                 : [];
+
+    const topicGrid = document.getElementById('topicGrid');
+    if (topics.length === 0) {
+      topicGrid.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><div class="empty-text">No active topics</div></div>`;
+      setEl('msgTable', emptyRow('No messages', 5));
+      return;
+    }
+
+    topicGrid.innerHTML = topics.map(t => `
+      <div class="topic-card">
+        <div class="topic-name">${t.name ?? t.topic ?? '—'}</div>
+        <div class="topic-stats">
+          <span>${t.message_count ?? t.messages ?? 0} msgs</span>
+          <span>${t.subscribers ?? 0} subs</span>
+          ${t.retained ? '<span class="badge badge-blue" style="font-size:10px">retained</span>' : ''}
+        </div>
+      </div>
+    `).join('');
+
+    // Gather messages
+    const allMsgs = [];
+    topics.forEach(t => {
+      const msgs = t.recent_messages ?? t.messages_data ?? [];
+      msgs.forEach(m => allMsgs.push({ ...m, _topic: t.name ?? t.topic }));
+    });
+
+    allMsgs.sort((a, b) => (b.ts ?? b.timestamp ?? 0) - (a.ts ?? a.timestamp ?? 0));
+
+    if (allMsgs.length === 0) {
+      setEl('msgTable', emptyRow('No recent messages', 5));
+    } else {
+      const rows = allMsgs.slice(0, 50).map(m => `<tr>
+        <td class="ts">${fmtTs(m.ts ?? m.timestamp)}</td>
+        <td class="mono">${m._topic}</td>
+        <td class="mono">${m.from ?? m.sender ?? '—'}</td>
+        <td class="mono">${m.to ?? m.recipient ?? '—'}</td>
+        <td class="mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">${truncate(m.payload ?? m.body ?? m.data)}</td>
+      </tr>`).join('');
+      setEl('msgTable', rows);
+    }
+
+    setConnected(true);
+  } catch (err) {
+    const grid = document.getElementById('topicGrid');
+    grid.innerHTML = `<div class="error-msg">⚠ Messages endpoint not available: ${err.message}</div>`;
+    setEl('msgTable', errRow('Messages not available: ' + err.message, 5));
+  }
+}
+
+// ── Refresh All ───────────────────────────────────────────────
+async function refreshAll() {
+  startTimer();
+  await Promise.allSettled([
+    refreshFleet(),
+    refreshAgents(),
+    refreshHealth(),
+    refreshUsage(),
+    refreshModels(),
+    refreshAlerts(),
+    refreshMessages(),
+  ]);
+  // Traces depend on knownAgents set by refreshAgents
+  await refreshTraces();
+}
+
+// ── Init ──────────────────────────────────────────────────────
+loadConfig();
+loadTheme();
+refreshAll();
+</script>
+</body>
+</html>

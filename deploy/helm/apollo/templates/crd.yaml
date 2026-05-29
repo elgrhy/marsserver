@@ -1,0 +1,187 @@
+{{/*
+  ApolloAgent CustomResourceDefinition
+  Defines the ApolloAgent CRD that the apollo-operator watches and reconciles.
+
+  This template is intentionally not wrapped in an "if" gate — the CRD must
+  exist before the operator starts, and it is safe to install even when the
+  operator is disabled (the CRD simply goes unreconciled until the operator
+  is enabled).
+
+  Install hooks ensure the CRD is created/updated before other chart resources.
+*/}}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: apolloagents.apollo.dev
+  labels:
+    {{- include "apollo.labels" . | nindent 4 }}
+  annotations:
+    # Upgrade hook — apply CRD before any other resource
+    "helm.sh/hook": "pre-install,pre-upgrade"
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/resource-policy": keep
+spec:
+  group: apollo.dev
+  scope: Namespaced
+  names:
+    plural: apolloagents
+    singular: apolloagent
+    kind: ApolloAgent
+    shortNames:
+      - aa
+    categories:
+      - apollo
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      # Enable /status subresource so the operator can PATCH status without
+      # triggering a full spec reconcile loop.
+      subresources:
+        status: {}
+      # Printer columns shown by `kubectl get apolloagents`
+      additionalPrinterColumns:
+        - name: Agent
+          type: string
+          jsonPath: .spec.agentSource
+          description: Agent package source (URL/path)
+        - name: Tenant
+          type: string
+          jsonPath: .spec.tenantId
+          description: Tenant identifier
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+          description: Desired replica count
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+          description: Current lifecycle phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: ["agentSource", "tenantId"]
+              properties:
+                # Source of the agent package: local path, HTTPS archive, or git URL
+                agentSource:
+                  type: string
+                  minLength: 1
+                  description: >
+                    Agent package source. Accepts:
+                      - Absolute filesystem path (local install only)
+                      - HTTPS URL to a .tar.gz or .zip archive
+                      - Git URL (https://github.com/org/repo.git)
+                tenantId:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                  pattern: '^[a-zA-Z0-9_\-\.]+$'
+                  description: Tenant identifier scoping this agent instance
+                # Target node URL; defaults to in-cluster node service
+                nodeUrl:
+                  type: string
+                  description: >
+                    Apollo node REST API base URL. Defaults to the in-cluster
+                    node service when omitted.
+                # Reference to a K8s Secret holding the X-Apollo-Key value
+                secretKeyRef:
+                  type: object
+                  required: ["name", "key"]
+                  description: Reference to a Secret containing the Apollo API key
+                  properties:
+                    name:
+                      type: string
+                      description: Name of the Secret resource
+                    key:
+                      type: string
+                      description: Key within the Secret
+                # Desired number of concurrent agent instances for this tenant
+                replicas:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 1
+                  description: Number of concurrent agent instances to maintain
+                # Optional environment overrides injected at agent start
+                env:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Additional environment variables passed to the agent
+                # Restart policy mirroring the agent.yaml restart_policy block
+                restartPolicy:
+                  type: object
+                  properties:
+                    maxRestarts:
+                      type: integer
+                      minimum: 0
+                      default: 3
+                    windowSecs:
+                      type: integer
+                      minimum: 10
+                      default: 60
+                # Resource hints forwarded to the node for scheduling
+                resources:
+                  type: object
+                  properties:
+                    cpu:
+                      type: string
+                      description: "CPU request, e.g. '0.5' or '500m'"
+                    memory:
+                      type: string
+                      description: "Memory request, e.g. '512mb' or '1gi'"
+                    timeoutSecs:
+                      type: integer
+                      minimum: 1
+            status:
+              type: object
+              properties:
+                # Lifecycle phase: Pending | Running | Failed | Stopped
+                phase:
+                  type: string
+                  enum: ["Pending", "Running", "Failed", "Stopped", "Unknown"]
+                  description: Current lifecycle phase of the agent
+                # Internal agent ID assigned by the node
+                agentId:
+                  type: string
+                  description: Agent identifier as registered on the node
+                # PID of the running agent process (informational)
+                pid:
+                  type: integer
+                  description: OS process ID of the running agent
+                # ISO-8601 timestamp of the last successful reconciliation
+                lastSyncAt:
+                  type: string
+                  format: date-time
+                  description: Timestamp of the most recent successful reconciliation
+                # Human-readable message for the current state
+                message:
+                  type: string
+                  description: Human-readable status message
+                # Observed generation aligned with metadata.generation
+                observedGeneration:
+                  type: integer
+                  description: Generation number the operator last reconciled
+                # Per-replica status
+                replicas:
+                  type: object
+                  properties:
+                    desired:
+                      type: integer
+                    ready:
+                      type: integer
+                    running:
+                      type: integer

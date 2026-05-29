@@ -412,6 +412,7 @@ mod memory_tests {
             tags:  vec![],
             limit: 5,
             min_score: 0.0,
+            embedding: None,
         };
 
         let results = search_memory(base, "t1", "a1", &query);
@@ -485,9 +486,10 @@ mod memory_tests {
 
         let query = MemoryQuery {
             query: "API".to_string(),
-            tags:  vec!["docs".to_string()],  // only docs entries
+            tags:  vec!["docs".to_string()],
             limit: 10,
             min_score: 0.0,
+            embedding: None,
         };
 
         let results = search_memory(base, "t1", "a1", &query);

@@ -1,0 +1,23 @@
+apiVersion: v2
+name: apollo
+description: APOLLO AI Agent Execution Platform v2.2
+type: application
+version: 2.2.0
+appVersion: "2.2.0"
+keywords:
+  - ai
+  - agents
+  - llm
+  - orchestration
+  - multi-agent
+home: https://github.com/elgrhydev/apollo
+sources:
+  - https://github.com/elgrhydev/apollo
+maintainers:
+  - name: Apollo Team
+    email: elgrhydev@gmail.com
+annotations:
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial Helm chart release for Apollo v2.2
+  artifacthub.io/license: MIT

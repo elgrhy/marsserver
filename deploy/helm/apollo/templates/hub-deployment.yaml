@@ -1,0 +1,126 @@
+{{/*
+  apollo-hub Deployment
+  Stateless fleet coordinator — polls node /metrics, exposes /summary, /catalog, /nodes/status.
+  No persistent volume needed.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "apollo.hub.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "apollo.componentLabels" (dict "root" . "component" "hub") | nindent 4 }}
+spec:
+  replicas: {{ .Values.hub.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "apollo.componentSelectorLabels" (dict "root" . "component" "hub") | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "apollo.componentLabels" (dict "root" . "component" "hub") | nindent 8 }}
+      {{- with .Values.hub.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "apollo.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "apollo.serviceAccountName" . }}
+      {{- with .Values.hub.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: apollo-hub
+          image: {{ include "apollo.imageRegistry" . }}{{ .Values.hub.image.repository }}:{{ .Values.hub.image.tag }}
+          imagePullPolicy: {{ .Values.hub.image.pullPolicy }}
+          {{- with .Values.hub.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - apollo-hub
+            - start
+            - --listen
+            - "0.0.0.0:9191"
+            - --scale-threshold
+            - {{ .Values.hub.scaleThreshold | quote }}
+            {{- if .Values.hub.webhookUrl }}
+            - --webhook-url
+            - {{ .Values.hub.webhookUrl | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 9191
+              protocol: TCP
+          env:
+            # Internal hub authentication key used for hub↔node calls
+            - name: APOLLO_HUB_KEY
+              {{- if .Values.hub.hubKeySecretRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hub.hubKeySecretRef.name }}
+                  key: {{ .Values.hub.hubKeySecretRef.key }}
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "apollo.secretName" . }}
+                  key: hub-key
+              {{- end }}
+            # Node service address so hub can resolve nodes via K8s DNS
+            - name: APOLLO_NODE_ADDR
+              value: "http://{{ include "apollo.node.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.node.service.port }}"
+            - name: APOLLO_SCALE_THRESHOLD
+              value: {{ .Values.hub.scaleThreshold | quote }}
+            {{- if .Values.hub.webhookUrl }}
+            - name: APOLLO_SCALE_WEBHOOK
+              value: {{ .Values.hub.webhookUrl | quote }}
+            {{- end }}
+            - name: RUST_LOG
+              value: "info"
+            - name: RUST_BACKTRACE
+              value: "1"
+            {{- with .Values.hub.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.hub.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.hub.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.hub.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.hub.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # Hub state is ephemeral; only a tmp dir is needed for runtime scratch
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.hub.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hub.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hub.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

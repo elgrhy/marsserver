@@ -1,4 +1,4 @@
-//! APOLLO Node — unified AI agent execution engine  v2.0
+//! APOLLO Node — unified AI agent execution engine  v2.2
 //!
 //! Security properties:
 //! - No default API key. `--secret-keys` / `APOLLO_SECRET_KEYS` must be set.
@@ -6,16 +6,12 @@
 //! - All policy denials are written to the audit log.
 //! - Secrets are AES-256-GCM encrypted at rest.
 //!
-//! Combines the original v1.2 execution, security, metering, and fleet layers
-//! with the v2.0 platform layers:
-//!   • Observability  (/traces)
-//!   • Governance     (/tenants/:id/policy)
-//!   • Health intel   (/health)
-//!   • Memory         (/memory)
-//!   • Model routing  (/models)
-//!   • Scheduler      (/schedule)
-//!   • Orchestration  (/blueprints, /groups, /workflows)
-//!   • Arch Selector  (/architecture)
+//! Platform layers:
+//!   v1.x  Execution, security, metering, fleet, webhooks
+//!   v2.0  Observability, governance, health, memory, model routing,
+//!          scheduler, orchestration, architecture selection
+//!   v2.2  Real-time alerting, agent messaging bus, vector memory,
+//!          parallel workflow execution, web dashboard
 
 use clap::{Parser, Subcommand};
 use anyhow::{Result, anyhow};
@@ -90,6 +86,19 @@ use apollo_core::orchestration::{
     ready_steps_with_def,
 };
 use apollo_core::arch_selector::{ArchitectureSelector, QuickClassifyRequest, quick_classify};
+
+// v2.2 platform imports
+use apollo_core::alerting::{
+    AlertRule, create_rule as create_alert_rule, delete_rule as delete_alert_rule,
+    get_rule as get_alert_rule, load_rules as load_alert_rules, load_history as load_alert_history,
+    evaluate_rules,
+};
+use apollo_core::messaging::{
+    BusMessage, publish as bus_publish, poll as bus_poll,
+    clear_topic as bus_clear_topic, list_topics as bus_list_topics,
+    peek_latest as bus_peek_latest,
+};
+use apollo_core::memory::put_memory_with_embedding;
 
 // ── CLI modules ───────────────────────────────────────────────────────────────
 mod fmt;
@@ -323,6 +332,9 @@ enum NodeAction {
         /// Node region (e.g. us-east-1) reported to hub
         #[arg(long, default_value = "default")]
         region: String,
+        /// Qdrant URL for vector memory backend (e.g. http://localhost:6333)
+        #[arg(long, env = "APOLLO_QDRANT_URL")]
+        qdrant_url: Option<String>,
     },
     Status,
 }
@@ -347,6 +359,8 @@ struct AppState {
     max_agents:   usize,
     base_dir:     PathBuf,
     webhook:      Option<WebhookConfig>,
+    /// Optional Qdrant URL for vector memory backend.
+    qdrant_url:   Option<String>,
 }
 
 // ── Request/Response types ────────────────────────────────────────────────────
@@ -612,7 +626,7 @@ async fn handle_node(action: NodeAction) -> Result<()> {
     match action {
         NodeAction::Start {
             listen, base_dir, max_agents, secret_keys,
-            tls_cert, tls_key, jwt_secret, webhook_url, webhook_secret, region,
+            tls_cert, tls_key, jwt_secret, webhook_url, webhook_secret, region, qdrant_url,
         } => {
             let profile = detect_node_capabilities().await?;
 
@@ -678,6 +692,14 @@ async fn handle_node(action: NodeAction) -> Result<()> {
                 });
             }
 
+            // ── Background: alerting loop (every 30 s) ───────────────────────
+            {
+                let alert_base = base_dir.clone();
+                tokio::spawn(async move {
+                    run_alerting_loop(alert_base).await;
+                });
+            }
+
             let state = AppState {
                 runtime:     runtime.clone(),
                 config:      config.clone(),
@@ -685,6 +707,7 @@ async fn handle_node(action: NodeAction) -> Result<()> {
                 max_agents,
                 base_dir:    base_dir.clone(),
                 webhook,
+                qdrant_url,
             };
 
             let rt_shutdown = Arc::clone(&runtime);
@@ -939,6 +962,23 @@ async fn run_api_server(
         .route("/architecture/select",                    post(handle_architecture_select))
         .route("/architecture/select/:workflow_id",       get(handle_architecture_select_saved))
         .route("/architecture/classify",                  post(handle_architecture_classify))
+
+        // ── v2.2: Alerting ───────────────────────────────────────────────────
+        .route("/alerts/rules",                           get(handle_alerts_list))
+        .route("/alerts/rules",                           post(handle_alerts_create))
+        .route("/alerts/rules/:rule_id",                  get(handle_alerts_get))
+        .route("/alerts/rules/:rule_id",                  delete(handle_alerts_delete))
+        .route("/alerts/history",                         get(handle_alerts_history))
+
+        // ── v2.2: Agent Messaging Bus ────────────────────────────────────────
+        .route("/messages",                               get(handle_messages_topics))
+        .route("/messages/:topic",                        post(handle_messages_publish))
+        .route("/messages/:topic",                        get(handle_messages_poll))
+        .route("/messages/:topic",                        delete(handle_messages_clear))
+        .route("/messages/:topic/latest",                 get(handle_messages_latest))
+
+        // ── v2.2: Web Dashboard ──────────────────────────────────────────────
+        .route("/dashboard",                              get(handle_dashboard))
 
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state);
@@ -1769,61 +1809,133 @@ async fn handle_workflows_run(
     match create_workflow_run(&s.base_dir, &def) {
         Ok(mut run) => {
             run.status = WorkflowStatus::Running;
-
-            // Execute steps respecting dependencies (sequential for now; parallel in v2.1)
-            let ready = ready_steps_with_def(&run, &def);
-            for step_id in ready {
-                let def_step = def.steps.iter().find(|s| s.step_id == step_id);
-                if let Some(step) = def_step {
-                    if let Some(exec) = run.steps.iter_mut().find(|e| e.step_id == step_id) {
-                        exec.status     = StepStatus::Running;
-                        exec.started_at = Some(now_unix());
-                    }
-
-                    let spec = get_agent_spec(&s.base_dir, &step.agent_id);
-                    match spec.and_then(|sp| {
-                        // Launch synchronously here — async exec managed by background task in v2.1
-                        let _rt = &s.runtime;
-                        // We can't .await here easily in a handler; spawn instead
-                        Ok(sp)
-                    }) {
-                        Ok(sp) => {
-                            let rt   = Arc::clone(&s.runtime);
-                            let bd   = s.base_dir.clone();
-                            let tid  = def.tenant_id.clone();
-                            let sid  = step_id.clone();
-                            let rid  = run.run_id.clone();
-                            let sp2  = sp.clone();
-                            tokio::spawn(async move {
-                                if let Ok(inst) = rt.start(&tid, &sp2).await {
-                                    let _ = save_instance(&bd, &inst);
-                                    // Update step status in run
-                                    if let Some(mut r) = load_workflow_run(&bd, &rid) {
-                                        if let Some(exec) = r.steps.iter_mut().find(|e| e.step_id == sid) {
-                                            exec.status     = StepStatus::Completed;
-                                            exec.agent_pid  = inst.pid;
-                                            exec.finished_at = Some(now_unix());
-                                        }
-                                        let _ = save_workflow_run(&bd, &r);
-                                    }
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            if let Some(exec) = run.steps.iter_mut().find(|e| e.step_id == step_id) {
-                                exec.status = if step.optional { StepStatus::Skipped } else { StepStatus::Failed };
-                                exec.error  = Some(e.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-
             let _ = save_workflow_run(&s.base_dir, &run);
+
+            // v2.2: true parallel DAG execution in a background task
+            let bd  = s.base_dir.clone();
+            let rt  = Arc::clone(&s.runtime);
+            let rid = run.run_id.clone();
+            let d   = def.clone();
+            tokio::spawn(async move {
+                run_workflow_parallel(bd, rt, rid, d).await;
+            });
+
             (StatusCode::OK, Json(serde_json::to_value(&run).unwrap_or_default())).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, err_json(&e.to_string())).into_response(),
     }
+}
+
+/// True parallel workflow execution engine.
+/// Fires all dependency-free steps concurrently using futures::future::join_all.
+/// When a batch completes, the next wave of now-ready steps is launched.
+async fn run_workflow_parallel(
+    base_dir: PathBuf,
+    runtime:  Arc<ProcessRuntime>,
+    run_id:   String,
+    def:      WorkflowDef,
+) {
+    loop {
+        // Load current run state
+        let mut run = match load_workflow_run(&base_dir, &run_id) {
+            Some(r) => r,
+            None    => break,
+        };
+
+        // Determine which steps are ready (pending + all deps complete/skipped)
+        let ready = ready_steps_with_def(&run, &def);
+
+        if ready.is_empty() {
+            // Check if all steps are in a terminal state
+            let all_terminal = run.steps.iter().all(|s| {
+                matches!(s.status, StepStatus::Completed | StepStatus::Failed | StepStatus::Skipped)
+            });
+            if all_terminal { break; }
+            // Some steps still running (from a previous spawn) — wait
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+
+        // Mark all ready steps as Running
+        let now = now_unix();
+        for step_id in &ready {
+            if let Some(exec) = run.steps.iter_mut().find(|e| &e.step_id == step_id) {
+                exec.status     = StepStatus::Running;
+                exec.started_at = Some(now);
+            }
+        }
+        let _ = save_workflow_run(&base_dir, &run);
+
+        // Build concurrent futures for this wave
+        let futures: Vec<_> = ready.iter().map(|step_id| {
+            let bd   = base_dir.clone();
+            let rt   = Arc::clone(&runtime);
+            let sid  = step_id.clone();
+            let tid  = def.tenant_id.clone();
+            let opt  = def.steps.iter().find(|s| s.step_id == sid)
+                           .map(|s| s.optional).unwrap_or(false);
+            let aid  = def.steps.iter().find(|s| s.step_id == sid)
+                           .map(|s| s.agent_id.clone()).unwrap_or_default();
+
+            async move {
+                let result = async {
+                    let spec = get_agent_spec_pure(&bd, &aid)?;
+                    let inst = rt.start(&tid, &spec).await?;
+                    let _ = save_instance(&bd, &inst);
+                    Ok::<AgentInstance, anyhow::Error>(inst)
+                }.await;
+                (sid, opt, result)
+            }
+        }).collect();
+
+        // Wait for all in this wave to complete
+        let results = futures::future::join_all(futures).await;
+
+        // Update run state based on results
+        let mut run = match load_workflow_run(&base_dir, &run_id) {
+            Some(r) => r,
+            None    => break,
+        };
+        for (step_id, optional, outcome) in results {
+            if let Some(exec) = run.steps.iter_mut().find(|e| e.step_id == step_id) {
+                exec.finished_at = Some(now_unix());
+                match outcome {
+                    Ok(inst) => {
+                        exec.status    = StepStatus::Completed;
+                        exec.agent_pid = inst.pid;
+                        tracing::info!(step = %step_id, "workflow step completed");
+                    }
+                    Err(e) => {
+                        exec.status = if optional { StepStatus::Skipped } else { StepStatus::Failed };
+                        exec.error  = Some(e.to_string());
+                        tracing::warn!(step = %step_id, error = %e, optional, "workflow step failed");
+                    }
+                }
+            }
+        }
+        let _ = save_workflow_run(&base_dir, &run);
+    }
+
+    // Finalize workflow status
+    if let Some(mut run) = load_workflow_run(&base_dir, &run_id) {
+        let non_opt_failed = run.steps.iter().any(|s| {
+            s.status == StepStatus::Failed &&
+            !def.steps.iter().find(|d| d.step_id == s.step_id)
+                .map(|d| d.optional).unwrap_or(false)
+        });
+        run.status      = if non_opt_failed { WorkflowStatus::Failed } else { WorkflowStatus::Completed };
+        run.finished_at = Some(now_unix());
+        let _ = save_workflow_run(&base_dir, &run);
+        tracing::info!(run_id = %run.run_id, status = ?run.status, "workflow finished");
+    }
+}
+
+fn get_agent_spec_pure(base_dir: &Path, name: &str) -> anyhow::Result<AgentSpec> {
+    load_agent_registry(base_dir)?
+        .into_iter()
+        .find(|r| r.id == name)
+        .map(|r| r.spec)
+        .ok_or_else(|| anyhow!("Agent '{}' not registered", name))
 }
 
 async fn handle_workflows_runs_list(
@@ -2100,4 +2212,130 @@ fn log_node_event_at(
 
 fn now_unix() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v2.2: ALERTING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async fn handle_alerts_list(State(s): State<AppState>) -> impl IntoResponse {
+    Json(load_alert_rules(&s.base_dir))
+}
+
+async fn handle_alerts_create(
+    State(s): State<AppState>,
+    Json(rule): Json<AlertRule>,
+) -> impl IntoResponse {
+    match create_alert_rule(&s.base_dir, rule) {
+        Ok(r)  => (StatusCode::CREATED, Json(serde_json::to_value(r).unwrap_or_default())).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, err_json(&e.to_string())).into_response(),
+    }
+}
+
+async fn handle_alerts_get(
+    State(s): State<AppState>,
+    AxumPath(rule_id): AxumPath<String>,
+) -> impl IntoResponse {
+    match get_alert_rule(&s.base_dir, &rule_id) {
+        Some(r) => Json(serde_json::to_value(r).unwrap_or_default()).into_response(),
+        None    => (StatusCode::NOT_FOUND, err_json("Alert rule not found")).into_response(),
+    }
+}
+
+async fn handle_alerts_delete(
+    State(s): State<AppState>,
+    AxumPath(rule_id): AxumPath<String>,
+) -> impl IntoResponse {
+    match delete_alert_rule(&s.base_dir, &rule_id) {
+        Ok(())  => (StatusCode::OK, Json(serde_json::json!({"status":"deleted"}))).into_response(),
+        Err(e)  => (StatusCode::NOT_FOUND, err_json(&e.to_string())).into_response(),
+    }
+}
+
+async fn handle_alerts_history(State(s): State<AppState>) -> impl IntoResponse {
+    Json(load_alert_history(&s.base_dir, 100))
+}
+
+/// Alerting background loop — evaluates all rules every 30 s.
+async fn run_alerting_loop(base_dir: PathBuf) {
+    let interval = Duration::from_secs(30);
+    loop {
+        tokio::time::sleep(interval).await;
+        evaluate_rules(&base_dir).await;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v2.2: AGENT MESSAGING BUS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[derive(Deserialize)]
+struct PublishBody {
+    sender_tenant: String,
+    sender_agent:  String,
+    payload:       serde_json::Value,
+    #[serde(default)]
+    ttl_secs:      Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+struct PollQuery {
+    #[serde(default)]
+    since: u64,
+    #[serde(default = "default_poll_limit")]
+    limit: usize,
+}
+fn default_poll_limit() -> usize { 50 }
+
+async fn handle_messages_topics(State(s): State<AppState>) -> impl IntoResponse {
+    Json(bus_list_topics(&s.base_dir))
+}
+
+async fn handle_messages_publish(
+    State(s): State<AppState>,
+    AxumPath(topic): AxumPath<String>,
+    Json(body): Json<PublishBody>,
+) -> impl IntoResponse {
+    match bus_publish(&s.base_dir, &topic, &body.sender_tenant, &body.sender_agent, body.payload, body.ttl_secs) {
+        Ok(msg) => (StatusCode::CREATED, Json(serde_json::to_value(msg).unwrap_or_default())).into_response(),
+        Err(e)  => (StatusCode::INTERNAL_SERVER_ERROR, err_json(&e.to_string())).into_response(),
+    }
+}
+
+async fn handle_messages_poll(
+    State(s): State<AppState>,
+    AxumPath(topic): AxumPath<String>,
+    axum::extract::Query(q): axum::extract::Query<PollQuery>,
+) -> impl IntoResponse {
+    let msgs = bus_poll(&s.base_dir, &topic, q.since, q.limit);
+    Json(msgs)
+}
+
+async fn handle_messages_latest(
+    State(s): State<AppState>,
+    AxumPath(topic): AxumPath<String>,
+    axum::extract::Query(q): axum::extract::Query<PollQuery>,
+) -> impl IntoResponse {
+    let msgs = bus_peek_latest(&s.base_dir, &topic, q.limit);
+    Json(msgs)
+}
+
+async fn handle_messages_clear(
+    State(s): State<AppState>,
+    AxumPath(topic): AxumPath<String>,
+) -> impl IntoResponse {
+    match bus_clear_topic(&s.base_dir, &topic) {
+        Ok(())  => (StatusCode::OK, Json(serde_json::json!({"status":"cleared","topic":topic}))).into_response(),
+        Err(e)  => (StatusCode::INTERNAL_SERVER_ERROR, err_json(&e.to_string())).into_response(),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v2.2: WEB DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static DASHBOARD_HTML: &str = include_str!("../../../dashboard/index.html");
+
+async fn handle_dashboard() -> impl IntoResponse {
+    axum::response::Html(DASHBOARD_HTML)
 }

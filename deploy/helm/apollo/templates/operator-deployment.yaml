@@ -1,0 +1,121 @@
+{{/*
+  apollo-operator Deployment
+  Kubernetes operator that watches ApolloAgent CRDs and reconciles agent workloads.
+  Rendered only when operator.enabled = true.
+*/}}
+{{- if .Values.operator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "apollo.operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "apollo.componentLabels" (dict "root" . "component" "operator") | nindent 4 }}
+spec:
+  # Operator runs as a singleton — leader election handles HA when replicas > 1.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "apollo.componentSelectorLabels" (dict "root" . "component" "operator") | nindent 6 }}
+  strategy:
+    # Recreate guarantees no two operator instances reconcile simultaneously
+    # without leader election. Switch to RollingUpdate if you enable leader election.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "apollo.componentLabels" (dict "root" . "component" "operator") | nindent 8 }}
+      {{- with .Values.operator.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "apollo.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "apollo.serviceAccountName" . }}
+      {{- with .Values.operator.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: apollo-operator
+          image: {{ include "apollo.imageRegistry" . }}{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          {{- with .Values.operator.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - apollo-operator
+            - --namespace
+            - {{ default "" .Values.operator.watchNamespace | quote }}
+            - --node-addr
+            - "http://{{ include "apollo.node.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.node.service.port }}"
+          ports:
+            # Metrics endpoint for Prometheus scraping
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            # Health/readiness endpoint
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          env:
+            # Operator reads node API key to register/manage agents on its behalf
+            - name: APOLLO_SECRET_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "apollo.secretName" . }}
+                  key: secret-keys
+            - name: APOLLO_WATCH_NAMESPACE
+              value: {{ default "" .Values.operator.watchNamespace | quote }}
+            - name: RUST_LOG
+              value: "info"
+            - name: RUST_BACKTRACE
+              value: "1"
+            {{- with .Values.operator.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.operator.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.operator.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

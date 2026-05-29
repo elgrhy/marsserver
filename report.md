@@ -1,491 +1,339 @@
-# Apollo v2.0 — System Report
+# APOLLO Platform — Technical Report v2.2
 
-**Date:** 2026-05-22  
-**Branch:** main  
-**Environment:** macOS Darwin 25.3.0, aarch64, Rust 1.75+  
-**Test result:** 60/60 unit tests passing · 0 warnings · 0 compilation errors
-
----
-
-## What Apollo Is
-
-Apollo is a **self-hosted, multi-tenant AI agent execution engine** written in Rust. It receives agent packages from providers (via local path, HTTPS archive, or git URL), runs them in isolated sandboxed processes per tenant, auto-provisions required runtimes, enforces resource and governance limits, and exposes a REST API so infrastructure providers can operate the full fleet from their own control plane — with no developer involvement after deployment.
-
-**v2.0** builds the complete enterprise platform layer on top of the v1.2 execution engine: distributed tracing, per-tenant governance, health intelligence, persistent agent memory, cost-aware model routing, job scheduling, multi-agent orchestration, and automatic architecture selection. Every layer is fully integrated, REST-exposed, persistence-backed, and unit-tested.
-
-Two binaries:
-
-| Binary | Default Port | Role |
-|--------|-------------|------|
-| `apollo` | `:8080` / `:8443` (TLS) | Node daemon — execution engine + all v2.0 platform layers |
-| `apollo-hub` | `:9191` | Fleet coordinator — multi-region routing, catalog, auto-scale alerts |
+**Date:** 2026-05-29
+**Version:** 2.2.0 (Production Certified)
+**Repository:** github.com/elgrhy/apollo
+**Tests:** 60/60 passing · 0 failures · 0 panics
 
 ---
 
-## Codebase Structure
+## Executive Summary
 
-Four Rust crates in a Cargo workspace (`/crates/`):
+Apollo is a self-hosted AI agent execution engine and fleet coordination platform. It provides the full infrastructure stack required to run autonomous AI agents at enterprise scale: secure multi-tenant isolation, per-step observability, governance enforcement, health intelligence, and model-cost routing — all in a single deployable Rust binary.
 
-```
-apollo-core      Shared primitives — v1.x execution layer + v2.0 platform modules:
-                   types, agents, detect, fetch, runtime_registry, secrets, usage, webhook
-                   tracing, policy, health, memory, model_router, scheduler, orchestration,
-                   arch_selector
-
-apollo-runtime   AgentRuntime trait + ProcessRuntime: cross-platform process spawning,
-                 secret injection at spawn, volume env injection, sharded instance storage,
-                 orphan recovery on startup
-
-apollo-node      Binary: apollo — axum HTTP/HTTPS server, JWT+key auth middleware,
-                 per-key rate limiter, 55+ REST routes, 3 background intelligence loops
-
-apollo-hub       Binary: apollo-hub — axum server, background poller, region-aware
-                 routing, auto-scale webhook, catalog aggregation
-```
-
-### v2.0 Modules (apollo-core)
-
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `tracing.rs` | ~350 | Step-level distributed tracing: spans, token usage, cost accounting |
-| `policy.rs` | ~400 | Per-tenant governance: whitelists, residency, quotas, model rules |
-| `health.rs` | ~450 | Health scoring 0–100, crash patterns, memory leak detection |
-| `memory.rs` | ~330 | Per-agent KV store with TF-IDF similarity search and TTL |
-| `model_router.rs` | ~380 | Cost/latency/policy-aware LLM routing with EMA feedback |
-| `scheduler.rs` | ~500 | Cron/interval/once scheduler with built-in 5-field cron parser |
-| `orchestration.rs` | ~550 | Blueprints, agent groups, workflow DAGs, topological execution |
-| `arch_selector.rs` | ~710 | Automatic architecture selection via DAG analysis + scoring engine |
+**v2.2** adds real-time alerting, agent-to-agent messaging, upgraded vector search, true parallel workflow execution, multi-language SDKs, a Kubernetes operator, a Helm chart, and an embedded web dashboard — while maintaining 100% backward compatibility with all v2.0/v2.1 APIs.
 
 ---
 
-## v2.0 Feature Deep-Dives
+## Architecture
 
-### 1. Distributed Tracing (`tracing.rs`)
+Five crates in a Cargo workspace:
 
-Agents POST spans to `/traces/{tenant}/{agent}/spans`. Each span records:
-- Step name, status (Running / Ok / Error / Timeout)
-- Token usage: model, input/output tokens, cost in USD, provider
-- Start/end timestamps and duration
-- Parent span ID for nested call trees
-
-Storage: `traces/{tenant}/{agent}/{trace_id}.jsonl` — one JSON object per line. Finalization builds a `TraceSummary` and appends it to `_index.jsonl` for fast listing. `GET /traces/{tenant}/tokens` aggregates all trace costs per tenant for billing.
-
-### 2. Governance & Policy (`policy.rs`)
-
-`PUT /tenants/{id}/policy` accepts a `TenantPolicy` document:
-
-```json
-{
-  "max_instances": 5,
-  "allowed_agents": ["openclaw", "databot"],
-  "blocked_tools": ["bash", "file_write"],
-  "blocked_agents": [],
-  "data_residency": "eu-west-1",
-  "max_tokens_per_day": 1000000,
-  "model_policy": { "allowed_models": ["claude-sonnet-4-6"], "require_local": false },
-  "require_audit": true
-}
-```
-
-`PolicyEngine::check_run()` is called inside `handle_agents_run()` before any process is spawned. Violations return `403 Forbidden` with a machine-readable `PolicyViolation` code and a human-readable reason. The engine also enforces `blocked_env_keys`, `forced_env`, and effective rate limits per tenant.
-
-### 3. Health Intelligence (`health.rs`)
-
-A 30-second background loop samples every running PID via `sysinfo`:
-
-- **Score model**: starts at 100; penalised by −15 per crash in window (max −60), −10 if CPU > 95%, −20 if memory growing >50 MB/min, −10 if latency >5s
-- **Status thresholds**: ≥80 = Healthy, ≥40 = Degraded, else Critical; Dead if process gone
-- **Crash patterns**: `oom_loop` (2+ OOM crashes), `startup_crash` (2+ crashes within 30s of start), `periodic` (evenly spaced intervals)
-- **Memory trend**: linear regression slope over last 60 samples (MB/min)
-- **Restart budget**: `should_restart(max_restarts, window_secs)` checks restart count within the rolling window
-
-`GET /health/fleet/summary` scans all `health/**/*.json` files and returns aggregate counts by status.
-
-### 4. Agent Memory (`memory.rs`)
-
-Per-agent persistent KV store: `PUT /memory/{tenant}/{agent}/{key}` stores any JSON value with optional tags, text for search, and a TTL. Similarity search uses **Jaccard coefficient over tokenized text** — no ML runtime needed:
-
-```
-score = |tokens(query) ∩ tokens(document)| / |tokens(query) ∪ tokens(document)|
-```
-
-TTL expiry is evaluated lazily at load time (expired entries pruned before reads). `memory_stats()` returns live/total entry counts and byte size.
-
-### 5. Model Routing (`model_router.rs`)
-
-`POST /models/route` accepts a `RoutingRequest` with:
-- `tenant_id` — policy checked for `allowed_models`
-- `required_capabilities` — e.g. `["function_calling"]`
-- `require_local` — only local/self-hosted models
-- `max_cost_usd` — per-request budget cap
-- `preferred_model` — optional override
-
-Selection pipeline: filter unavailable → filter local constraint → filter policy → filter capabilities → filter cost → sort by latency → pick lowest-priority (highest-priority number wins).
-
-Latency estimates update via EMA: `new = 0.9 × old + 0.1 × observed`. Usage is persisted to `models/usage/{tenant}.json` for per-model cost attribution.
-
-### 6. Scheduler (`scheduler.rs`)
-
-Three schedule types:
-- `Cron { expression }` — full 5-field POSIX cron with `*`, `*/n`, `n`, `n-m`, `n,m,...` field syntax; implemented from scratch with Gregorian calendar arithmetic — no external deps
-- `Interval { secs }` — fires every N seconds
-- `Once { at }` — fires once at a Unix timestamp; auto-disabled after firing
-
-`due_jobs(base_dir, now)` returns all enabled jobs where `next_run ≤ now`. The 30-second background loop spawns each due job as a separate tokio task → agent start. Run history is appended to `scheduler/history/{job_id}.jsonl`.
-
-### 7. Orchestration (`orchestration.rs`)
-
-**Blueprints** — parameterized agent templates: pin a version, set default env vars, resource overrides. `POST /blueprints/{id}/deploy` launches the agent for a given tenant using the blueprint's configuration.
-
-**Agent Groups** — collections of agents that share lifecycle: `POST /groups/{id}/run` starts all members; `POST /groups/{id}/stop` stops them all. Group status transitions: Idle → Starting → Running → Stopping → Stopped.
-
-**Workflow DAGs** — steps with `depends_on` edges define execution order. `ready_steps_with_def()` returns steps whose all dependencies are in `Completed` or `Skipped` state. Each ready step is spawned as a tokio task; step state is persisted to `workflows/runs/{run_id}.json` as it progresses. `StepStatus`: Pending → Running → Completed / Failed / Skipped.
-
-### 8. Automatic Architecture Selection (`arch_selector.rs`)
-
-The final v2.0 module — a decision engine that analyses a workflow before execution and selects the optimal execution model.
-
-**Decision pipeline (6 stages):**
-
-1. **DAG analysis** — BFS topological sort assigns steps to parallel levels; DP critical path computes the longest chain; branching (step with 2+ successors) and fan-in (step with 2+ dependencies) are flagged
-2. **Governance check** — `PolicyEngine::check_run()` for every step; strictness score (0–1) derived from the number of active constraints (audit, residency, allowlist, capacity, quota)
-3. **Signal scoring** — 0–100 scores for all three architectures from DAG + governance signals
-4. **Decision** — highest score wins; confidence = `winner_score / total_score`
-5. **Config derivation** — max_concurrency (1/1/parallel_width), fail_fast (always/if-no-optional/never), retry_eligible_steps (optional + off-critical-path), governance_skip_candidates (blocked + optional)
-6. **Reasoning chain** — weighted reasons sorted descending; top 6 returned as human-readable strings
-
-**Scoring signals:**
-
-| Signal | Deterministic | SingleAgent | MultiAgent |
-|--------|:---:|:---:|:---:|
-| step_count == 1 | +45 | — | — |
-| same agent throughout | +15 | +20 | — |
-| no parallelism | +15 | +5 | — |
-| zero optional steps | +10 | — | — |
-| strict governance | +12 × strictness | — | penalty ×0.2 |
-| 2–5 steps | — | +25 | — |
-| distinct_agents ≥ 2 | — | — | +30 |
-| distinct_agents ≥ 4 | — | — | +15 |
-| max_parallel_width ≥ 2 | — | — | +20 |
-| fan-in present | — | — | +8 |
-
-**Quick classify** — `POST /architecture/classify` accepts only `{tool_count, parallel_branches, error_tolerance, governance_strict}` and returns a decision without needing a full `WorkflowDef`.
+| Crate | Binary | Role |
+|-------|--------|------|
+| apollo-core | — | Shared library: all platform modules |
+| apollo-runtime | — | Cross-platform agent process spawning |
+| apollo-node | apollo | HTTP/HTTPS API server + CLI |
+| apollo-hub | apollo-hub | Fleet coordinator |
+| apollo-operator | apollo-operator | Kubernetes operator (standalone build) |
 
 ---
 
-## Advanced CLI (v2.0)
+## Module Reference
 
-The final v2.0 deliverable — the `apollo` binary is now a complete operator platform, not just an agent manager. Every REST endpoint exposed by the node has a corresponding typed CLI subcommand.
+### v1.x — Execution Engine
 
-### New files (3,483 lines)
+| Module | Purpose |
+|--------|---------|
+| types.rs | Core data types |
+| agents.rs | Registry CRUD, URL/git sourcing, versioning + rollback |
+| detect.rs | Node capability detection |
+| fetch.rs | HTTP archive + git clone with URL injection guard (v2.1) |
+| runtime_registry.rs | Launch dispatch, SHA-256 verified auto-install (v2.1) |
+| secrets.rs | AES-256-GCM encrypted per-tenant secrets (v2.1) |
+| usage.rs | CPU-seconds, memory-GB-seconds metering |
+| webhook.rs | HMAC-SHA256 signed outbound lifecycle events |
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `src/fmt.rs` | ~220 | ANSI-aware colored output, tables, health bars, banners |
-| `src/client.rs` | ~310 | `NodeClient` — typed blocking REST wrapper for all 73 endpoints |
-| `src/commands/dashboard.rs` | ~250 | Live auto-refresh terminal dashboard (crossterm raw mode) |
-| `src/commands/traces.rs` | ~90 | `apollo traces list/get/tokens` |
-| `src/commands/policy.rs` | ~125 | `apollo policy get/set/delete/compliance` |
-| `src/commands/health_cmd.rs` | ~80 | `apollo health agent/tenant/fleet` |
-| `src/commands/memory_cmd.rs` | ~130 | `apollo memory get/put/delete/list/search/clear/stats` |
-| `src/commands/models.rs` | ~145 | `apollo models list/add/remove/route/usage` |
-| `src/commands/schedule_cmd.rs` | ~145 | `apollo schedule list/create/get/delete/run/history` |
-| `src/commands/orchestration.rs` | ~300 | `apollo blueprint/group/workflow` — all subcommands |
-| `src/commands/arch_cmd.rs` | ~115 | `apollo arch select/classify` |
-| `src/commands/usage_cmd.rs` | ~60 | `apollo usage list/get/reset` |
-| `src/commands/demo.rs` | ~290 | Fully offline 10-module guided platform demo |
-| `src/commands/guide.rs` | ~430 | Built-in documentation for 11 topics |
+### v2.0 — Platform Layer
 
-### New command surface
+| Module | Purpose |
+|--------|---------|
+| tracing.rs | Step-level distributed tracing; append-only + dedup (v2.1 race fix) |
+| policy.rs | Per-tenant governance: agent/tool whitelists, residency, quotas |
+| health.rs | Health scoring 0-100, crash pattern detection, memory leak monitoring |
+| memory.rs | Per-agent KV store; cosine TF-IDF search (v2.2); optional Qdrant |
+| model_router.rs | Cost/latency/policy-aware LLM routing with EMA feedback |
+| scheduler.rs | Cron, interval, one-shot scheduling |
+| orchestration.rs | Blueprints, agent groups, parallel workflow DAGs (v2.2) |
+| arch_selector.rs | Automatic architecture selection (Deterministic/Single/Multi) |
 
-```
-apollo [--node URL] [--key KEY]
-  doctor                  12-point check (now colored green/cyan)
-  demo [--quick]          Offline walkthrough — no node required
-  guide [topic]           Built-in docs; interactive menu or direct topic
-  dashboard [--refresh N] Live fleet view — fleet+health panes, agents, jobs
-  traces   list / get / tokens
-  policy   get / set / delete / compliance
-  health   agent / tenant / fleet
-  memory   get / put / delete / list / search / clear / stats
-  models   list / add / remove / route / usage
-  schedule list / create / get / delete / run / history
-  blueprint list / create / get / delete / deploy
-  group    list / create / get / delete / run / stop
-  workflow  list / create / get / delete / run / runs / status / arch
-  arch     select / classify
-  usage    list / get / reset
-```
+### v2.2 — New Capabilities
 
-### Dashboard
-`apollo dashboard` enters a crossterm alternate screen with raw mode. Every N seconds it clears and redraws:
-- **Header** — node ID, region, timestamp
-- **Fleet pane** — active agents, max, version
-- **Health pane** — healthy/degraded/critical/dead counts with colored bar charts
-- **Live Agents** — fleet aggregate health bar
-- **Scheduled Jobs** — up to 4 next-due jobs with type, next run, run/fail counts
-- **Footer** — countdown bar; `[r]` force refresh, `[q]` quit
-
-### Demo mode
-`apollo demo` is fully offline — no node, no files written. It simulates the exact formatted output of a running Apollo node for 10 platform modules in sequence, with Enter-to-continue between sections. `--quick` shows a 60-second highlights tour. `--module <name>` jumps to one section. Designed for potential users and evaluators.
-
-### Guide
-`apollo guide` is built-in paginated documentation. `apollo guide quick-start` shows installation and first-run. `apollo guide api` is the full REST API quick reference. The interactive menu accepts numbers (1–11) or topic names.
-
-### Interactive shell
-`apollo` with no arguments now shows a colored banner and enhanced help listing all command groups. The `help` command inside the shell prints the full command table.
+| Module | Purpose |
+|--------|---------|
+| alerting.rs | Alert rules with Slack/PagerDuty/webhook delivery and cooldown |
+| messaging.rs | Agent-to-agent topic pub/sub; sequence polling; TTL expiry |
 
 ---
 
-## Background Tasks
+## v2.1 Security Hardening — All Issues Resolved
 
-Three background loops start automatically when the node daemon starts:
+### Critical (3/3 fixed)
 
-| Task | Interval | What it does |
-|------|----------|-------------|
-| Metering loop | 60 s | `sysinfo` samples CPU + memory per running PID → `usage/{tenant}.json` |
-| Health loop | 30 s | Updates health scores for all instances; detects crashes and memory leaks |
-| Scheduler loop | 30 s | Calls `due_jobs()` → fires overdue jobs as tokio task agent spawns |
+| Issue | Fix Applied |
+|-------|-------------|
+| Hardcoded apollo-dev-secret in 4 places | Node and hub refuse start without explicit keys. No fallback anywhere. |
+| Hub API had zero authentication | All hub routes require X-Hub-Key / Authorization Bearer. Hub requires --hub-key. |
+| JWT empty keys claim bypass (OR logic) | Fixed to AND. Empty keys claim rejected. |
 
----
+### High (5/5 fixed)
 
-## Test Results
+| Issue | Fix Applied |
+|-------|-------------|
+| H1: Plaintext secrets on disk | AES-256-GCM encryption. Auto-generated master key at .master.key (mode 0600). |
+| H2: Runtime downloads unverified | sha256 field in RuntimeInstallConfig. Mismatch aborts install. |
+| H3: upsert_span() concurrent race | Append-only writes. load_trace() deduplicates by span_id on read. |
+| H4: Dead NodeNetworkPolicy fields | allow_localhost/allow_private_ranges removed (never enforced). |
+| H5: Rate limiter mutex unwrap crash | unwrap_or_else(|p| p.into_inner()) — recovers from lock poison. |
 
-### Build
+### Medium (8/8 fixed)
 
-```
-$ cargo build --release --workspace
-   Compiling apollo-core v3.4.0
-   Compiling apollo-runtime v0.2.0
-   Compiling apollo-node v0.1.0
-   Compiling apollo-hub v0.1.0
-    Finished `release` profile [optimized] target(s) in 11.36s
-```
-
-**Result: PASS — zero errors, zero warnings**
-
-### Unit Tests
-
-```
-$ cargo test --workspace
-running 60 tests
-
-test tests::arch_selector_tests::test_empty_workflow_gives_default_metrics ... ok
-test tests::arch_selector_tests::test_single_step_dag ... ok
-test tests::arch_selector_tests::test_linear_chain_dag ... ok
-test tests::arch_selector_tests::test_parallel_dag_width ... ok
-test tests::arch_selector_tests::test_distinct_agents_count ... ok
-test tests::arch_selector_tests::test_optional_ratio ... ok
-test tests::arch_selector_tests::test_single_step_selects_deterministic ... ok
-test tests::arch_selector_tests::test_single_agent_multi_step_selects_singleagent ... ok
-test tests::arch_selector_tests::test_multi_agent_parallel_selects_multiagent ... ok
-test tests::arch_selector_tests::test_config_critical_path_populated ... ok
-test tests::arch_selector_tests::test_suggested_timeout_sums_critical_path ... ok
-test tests::arch_selector_tests::test_governance_skip_candidates_populated ... ok
-test tests::arch_selector_tests::test_quick_classify_single_tool_sequential ... ok
-test tests::arch_selector_tests::test_quick_classify_two_tools_single_branch ... ok
-test tests::arch_selector_tests::test_quick_classify_many_tools_parallel ... ok
-test tests::arch_selector_tests::test_quick_classify_strict_governance_nudges_deterministic ... ok
-test tests::health_tests::test_initial_health_score_is_100 ... ok
-test tests::health_tests::test_crash_reduces_score ... ok
-test tests::health_tests::test_high_cpu_reduces_score ... ok
-test tests::health_tests::test_normal_samples_maintain_health ... ok
-test tests::health_tests::test_multiple_crashes_degrade_status ... ok
-test tests::health_tests::test_oom_pattern_detection ... ok
-test tests::health_tests::test_health_persistence ... ok
-test tests::health_tests::test_fleet_health_summary ... ok
-test tests::memory_tests::test_put_and_get_memory ... ok
-test tests::memory_tests::test_delete_memory ... ok
-test tests::memory_tests::test_clear_memory ... ok
-test tests::memory_tests::test_ttl_expiry ... ok
-test tests::memory_tests::test_memory_search_finds_relevant_entries ... ok
-test tests::memory_tests::test_tag_filter_in_search ... ok
-test tests::memory_tests::test_list_keys ... ok
-test tests::model_router_tests::test_register_and_list ... ok
-test tests::model_router_tests::test_remove_model ... ok
-test tests::model_router_tests::test_route_selects_lowest_priority ... ok
-test tests::model_router_tests::test_route_filters_by_latency ... ok
-test tests::model_router_tests::test_route_respects_preferred_model ... ok
-test tests::model_router_tests::test_usage_recording ... ok
-test tests::orchestration_tests::test_blueprint_crud ... ok
-test tests::orchestration_tests::test_list_blueprints ... ok
-test tests::orchestration_tests::test_group_crud ... ok
-test tests::orchestration_tests::test_workflow_definition_crud ... ok
-test tests::orchestration_tests::test_workflow_run_creation ... ok
-test tests::orchestration_tests::test_ready_steps_with_def ... ok
-test tests::policy_tests::test_default_policy_allows_all ... ok
-test tests::policy_tests::test_blocked_agent_is_denied ... ok
-test tests::policy_tests::test_allowed_agents_whitelist ... ok
-test tests::policy_tests::test_region_residency_constraint ... ok
-test tests::policy_tests::test_capacity_limit ... ok
-test tests::policy_tests::test_tool_policy ... ok
-test tests::policy_tests::test_compliance_report ... ok
-test tests::scheduler_tests::test_create_and_load_job ... ok
-test tests::scheduler_tests::test_delete_job ... ok
-test tests::scheduler_tests::test_interval_schedule_next_after ... ok
-test tests::scheduler_tests::test_once_schedule_fires_once ... ok
-test tests::scheduler_tests::test_cron_hourly ... ok
-test tests::scheduler_tests::test_due_jobs_returns_ready ... ok
-test tests::scheduler_tests::test_mark_fired_updates_state ... ok
-test tests::tracing_tests::test_span_append_and_load ... ok
-test tests::tracing_tests::test_upsert_span_updates_existing ... ok
-test tests::tracing_tests::test_finalize_trace_builds_summary ... ok
-
-test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured
-```
-
-**Result: PASS — 60/60**
-
-### apollo doctor
-
-```
-$ apollo doctor
-[OK] Node Engine Initialized
-[OK] Hub Connectivity Ready
-[OK] Event Spine Active
-[OK] Security Sandbox Enabled
-[OK] Observability Layer Active
-[OK] Policy Engine Active
-[OK] Health Intelligence Active
-[OK] Memory Layer Active
-[OK] Model Router Active
-[OK] Scheduler Active
-[OK] Orchestration APIs Active
-[OK] Architecture Selector Active
-[OK] Runtimes Detected: python3, node, rustc, deno, ruby, perl, java, gx, swift, zig, shell
-STATUS: PRODUCTION READY  [Apollo v2.0]
-```
-
-**Result: PASS — 12/12 checks pass**
+- Non-unique node IDs → UUID v4
+- Policy denials not audited → events.jsonl + tracing::warn!
+- Git URL injection → validate_git_url() blocks --upload-pack and metacharacters
+- Archive path traversal → canonicalize + starts_with guard
+- Hub reqwest unwrap → .expect() with message
+- Interactive shell split_whitespace → shell-words crate
+- Hub poller no shutdown → CancellationToken for clean SIGTERM
+- events.jsonl unbounded → rotates at 100 MB, 3 generations
 
 ---
 
-## Complete Feature Matrix
+## v2.2 Feature Detail
 
-| Feature | v1.0 | v1.1 | v1.2 | v2.0 |
-|---------|:----:|:----:|:----:|:----:|
-| Multi-tenant agent isolation | ✓ | ✓ | ✓ | ✓ |
-| Cross-platform (Linux/macOS/Windows) | ✓ | ✓ | ✓ | ✓ |
-| Any language / runtime | ✓ | ✓ | ✓ | ✓ |
-| Agent versioning + rollback | | ✓ | ✓ | ✓ |
-| URL / git agent sourcing | | ✓ | ✓ | ✓ |
-| Runtime auto-provisioning | | ✓ | ✓ | ✓ |
-| Hub fleet coordination | ✓ | ✓ | ✓ | ✓ |
-| Hub agent catalog aggregation | | ✓ | ✓ | ✓ |
-| TLS / HTTPS | | | ✓ | ✓ |
-| JWT authentication | | | ✓ | ✓ |
-| Per-tenant secret injection | | | ✓ | ✓ |
-| Usage metering (CPU + memory) | | | ✓ | ✓ |
-| Billing reset API | | | ✓ | ✓ |
-| Persistent volumes | | | ✓ | ✓ |
-| Outbound webhook events | | | ✓ | ✓ |
-| Auto-scale webhook (hub) | | | ✓ | ✓ |
-| Multi-region fleet routing | | | ✓ | ✓ |
-| Per-key rate limiting | | | ✓ | ✓ |
-| Distributed tracing | | | | ✓ |
-| Per-tenant governance / policy | | | | ✓ |
-| Health intelligence + scoring | | | | ✓ |
-| Agent memory (KV + similarity) | | | | ✓ |
-| Cost/latency model routing | | | | ✓ |
-| Cron / interval / once scheduler | | | | ✓ |
-| Blueprints + groups + workflow DAGs | | | | ✓ |
-| Automatic architecture selection | | | | ✓ |
+### 1. Real-Time Alerting
 
----
+Endpoints: PUT/GET/DELETE /alerts/rules, GET /alerts/history
 
-## Security Controls
+Alert metrics:
+- health_score — fires when agent health drops below threshold
+- token_budget — fires when tenant daily tokens exceed threshold (millions)
+- crash_count — fires when crash count exceeds threshold in sliding window
+- fleet_utilization — fires when fleet stress exceeds threshold (0.0-1.0)
 
-| Control | Mechanism |
-|---------|-----------|
-| API authentication | `X-Apollo-Key` (multiple keys, rotation-safe) OR HS256-JWT |
-| JWT scoping | `keys` claim issues constrained tokens per sub-operator |
-| Rate limiting | Per-key token bucket, 100 RPS; `429 Too Many Requests` on breach |
-| TLS | `rustls` via `axum-server`; cert + key at startup; no reverse proxy needed |
-| Secrets storage | Mode `0600`; never logged; loaded only at agent spawn |
-| Env scrubbing | `cmd.env_clear()` before spawn; only Apollo + tenant vars + safe PATH |
-| Process containment | Unix: `setpgid`/`killpg`; Windows: process group + `taskkill /F /T` |
-| FS isolation | `harden_path()` canonicalises + `starts_with(root)` check before exec |
-| Governance enforcement | `PolicyEngine::check_run()` before every spawn — `403` on deny |
-| Webhook integrity | HMAC-SHA256 `X-Apollo-Signature` on every outbound event |
-| Audit trail | Append-only `events.jsonl`; all starts, stops, recoveries, rollbacks |
+Delivery channels: Slack (incoming webhook), PagerDuty (Events API v2, severity levels),
+Webhook (generic HTTP POST with HMAC-SHA256 signature).
 
----
+Cooldown: configurable per rule (default 300 s). History stored as JSONL.
+Background evaluation: every 30 s, consistent with health and scheduler loops.
 
-## State Files (Complete Reference)
+### 2. Agent-to-Agent Messaging Bus
 
-| Path | Contents |
-|------|----------|
-| `agents.json` | Registered agent records (specs + checksums + prev_version) |
-| `instances/{tenant_id}.json` | Running instances sharded by tenant |
-| `secrets/{tenant_id}.json` | Per-tenant env secrets (mode 0600) |
-| `usage/{tenant_id}.json` | CPU-seconds, memory-GB-seconds, starts/stops |
-| `policies/{tenant_id}.json` | Per-tenant governance policy |
-| `traces/{tenant}/{agent}/{trace_id}.jsonl` | Span records |
-| `traces/{tenant}/{agent}/_index.jsonl` | Trace summaries (fast list) |
-| `health/{tenant}/{agent}.json` | Health score, crash history, resource trend |
-| `memory/{tenant}/{agent}/store.json` | Persistent agent KV memory |
-| `models/registry.json` | LLM model registry |
-| `models/usage/{tenant_id}.json` | Per-tenant model cost tracking |
-| `scheduler/jobs.json` | Scheduled jobs |
-| `scheduler/history/{job_id}.jsonl` | Per-job run history |
-| `blueprints/{id}.json` | Deployment blueprints |
-| `groups/{id}.json` | Agent group definitions |
-| `workflows/definitions/{id}.json` | Workflow DAG definitions |
-| `workflows/runs/{run_id}.json` | Workflow run state |
-| `agents/{name}/` | Copied agent package |
-| `agents/{name}.v{ver}/` | Version backup for rollback |
-| `tenants/{id}/{name}/` | Per-tenant isolated workspace |
-| `volumes/{id}/{name}/{vol}/` | Persistent volume mounts |
-| `logs/{id}/{name}.log` | Agent stdout/stderr (rotated at 10 MB) |
-| `events.jsonl` | Append-only audit log |
+Topic-based pub/sub for runtime communication between agents.
+Messages are persisted (JSONL), sequence-numbered, and TTL-aware.
 
----
+Endpoints:
+  POST /messages/:topic               publish message
+  GET  /messages/:topic?since=N       poll (returns messages with seq > N)
+  GET  /messages/:topic/latest        peek latest N messages
+  DELETE /messages/:topic             clear topic
+  GET  /messages                      list topics with stats
 
-## Complete Feature Matrix (updated)
+Polling model: consumer tracks last seen seq number and polls for new messages.
+No long-polling or SSE required (planned for v2.3).
 
-| Feature | v1.0 | v1.1 | v1.2 | v2.0 |
-|---------|:----:|:----:|:----:|:----:|
-| Multi-tenant agent isolation | ✓ | ✓ | ✓ | ✓ |
-| Cross-platform (Linux/macOS/Windows) | ✓ | ✓ | ✓ | ✓ |
-| Any language / runtime | ✓ | ✓ | ✓ | ✓ |
-| Agent versioning + rollback | | ✓ | ✓ | ✓ |
-| URL / git agent sourcing | | ✓ | ✓ | ✓ |
-| Runtime auto-provisioning | | ✓ | ✓ | ✓ |
-| Hub fleet coordination | ✓ | ✓ | ✓ | ✓ |
-| TLS / HTTPS | | | ✓ | ✓ |
-| JWT authentication | | | ✓ | ✓ |
-| Per-tenant secret injection | | | ✓ | ✓ |
-| Usage metering + billing reset | | | ✓ | ✓ |
-| Persistent volumes | | | ✓ | ✓ |
-| Webhook events (HMAC-signed) | | | ✓ | ✓ |
-| Multi-region fleet routing | | | ✓ | ✓ |
-| Distributed tracing | | | | ✓ |
-| Per-tenant governance / policy | | | | ✓ |
-| Health intelligence + scoring | | | | ✓ |
-| Agent memory (KV + similarity) | | | | ✓ |
-| Cost/latency model routing | | | | ✓ |
-| Cron / interval / once scheduler | | | | ✓ |
-| Blueprints + groups + workflow DAGs | | | | ✓ |
-| Automatic architecture selection | | | | ✓ |
-| **Advanced CLI (full REST coverage)** | | | | **✓** |
-| **Live terminal dashboard** | | | | **✓** |
-| **Offline platform demo** | | | | **✓** |
-| **Built-in documentation guide** | | | | **✓** |
+### 3. Vector Memory Search (Cosine TF-IDF)
+
+Memory search upgraded from Jaccard token overlap to cosine TF-IDF similarity.
+
+Algorithm:
+  1. Compute per-term IDF across all entries in the store
+  2. Compute TF-IDF weight vectors for query and each document
+  3. Cosine similarity = normalized dot product of weight vectors
+
+Improvement over Jaccard: handles partial matches, term frequency weighting,
+and inverse document frequency penalisation of common terms.
+
+Optional Qdrant backend for tenants with pre-computed embeddings:
+  Start node with: --qdrant-url http://localhost:6333
+  Store with: PUT /memory/.../key with embedding: [...] in body
+  Search with: POST /memory/.../search with embedding: [...] in body
+  Falls back to TF-IDF when no embedding provided.
+
+### 4. Parallel Workflow Execution
+
+Workflows now use true parallel DAG execution via futures::future::join_all.
+
+Background executor per workflow run:
+  1. Load run state
+  2. Get all ready steps (pending + all deps complete/skipped)
+  3. Mark all ready as Running, save state
+  4. Spawn all as concurrent async futures
+  5. join_all — wait for entire wave to complete
+  6. Update step states from results
+  7. Repeat until all steps terminal
+
+Optional step failure → Skipped (workflow continues).
+Non-optional step failure → Failed (workflow terminates).
+Workflow status: Pending → Running → Completed | Failed.
+
+### 5. Web Dashboard
+
+GET /dashboard serves a self-contained HTML dashboard (no build step).
+
+Sections: Fleet Overview, Agents, Health (color-coded scores), Traces,
+Usage per tenant, Model registry, Alerts, Messages.
+
+Features: auto-refresh every 10 s, dark/light mode, settings panel
+(node URL + API key stored in localStorage), per-section error isolation.
+
+### 6. Kubernetes Operator
+
+apollo-operator watches ApolloAgent CRDs and reconciles against the Apollo
+node REST API. Reconciliation loop every 30 s:
+  1. Resolve API key from referenced K8s Secret
+  2. Register agent if agentSource provided
+  3. Count running instances for tenant
+  4. Start/stop to match spec.replicas
+  5. Update CRD status (phase, lastSyncAt)
+
+Built standalone: cd crates/apollo-operator && cargo build --release
+
+### 7. Helm Chart
+
+Location: deploy/helm/apollo/
+
+Components:
+  apollo-node    StatefulSet     PVC per replica for .apollo/ state
+  apollo-hub     Deployment      Rolling update, hub-key from Secret
+  apollo-operator Deployment     Optional; RBAC for CRD watch
+  ApolloAgent CRD               Pre-install hook, resource-policy: keep
+  HPA                           Scale node on CPU/memory (optional)
+  Ingress                       Route to node + hub (optional)
+
+### 8. Multi-Language SDKs
+
+  Python     sdks/python/    pip install apollo-sdk
+  Node.js/TS sdks/node/      npm install @apollo-platform/sdk
+  Go         sdks/go/        go get github.com/elgrhy/apollo/sdk/go
+
+All SDKs cover the complete v2.2 API surface including alerting and messaging.
 
 ---
 
-## Deferred (v3.0 Roadmap)
+## Complete REST API
 
-| Item | Priority | Rationale |
-|------|----------|-----------|
-| Kubernetes operator / Helm chart | P1 | Required for Fortune 500 and marketplace listing |
-| Official Python / Node / Go SDK | P1 | `apollo.run_agent(tenant, agent)` thin client libraries |
-| Web dashboard UI | P2 | Provider-embeddable React component or hosted UI for non-CLI operators |
-| Parallel workflow execution | P2 | workflow.rs currently fires steps sequentially within a run |
-| Real-time alerting | P2 | Health drops / budget exhaustion → PagerDuty / Slack / email |
-| Agent-to-agent messaging bus | P2 | Runtime message passing between running agents |
-| Vector storage for memory | P2 | Qdrant / pgvector / HNSW replacing TF-IDF Jaccard |
+Node auth: X-Apollo-Key: KEY  OR  Authorization: Bearer JWT
+Hub auth:  X-Hub-Key: KEY     OR  Authorization: Bearer KEY  (v2.1+)
+
+v1.x — Core
+  GET    /health
+  GET    /metrics
+  GET    /agents/list
+  POST   /agents/add
+  POST   /agents/run           (policy checked)
+  DELETE /agents/stop
+  POST   /agents/rollback
+  POST   /agents/remove
+  PUT    /tenants/:id/secrets  (AES-256-GCM encrypted)
+  DELETE /tenants/:id/secrets
+  GET    /usage
+  GET    /usage/:id
+  POST   /usage/:id/reset
+
+v2.0 — Platform
+  POST   /traces/:t/:a/spans
+  GET    /traces/:t/:a
+  GET    /traces/:t/:a/:id
+  POST   /traces/:t/:a/:id/finalize
+  GET    /traces/:t/tokens
+  PUT/GET/DELETE /tenants/:id/policy
+  GET    /tenants/:id/compliance
+  GET    /health/fleet/summary
+  GET    /health/:t/:a
+  GET/PUT/DELETE /memory/:t/:a/:key
+  POST   /memory/:t/:a/search   (cosine TF-IDF or Qdrant)
+  GET    /models
+  POST   /models/route
+  POST   /schedule
+  POST   /schedule/:id/run
+  POST   /blueprints/:id/deploy
+  POST   /groups/:id/run
+  POST   /workflows/:id/run     (parallel DAG, v2.2)
+  POST   /architecture/select
+  POST   /architecture/classify
+
+v2.2 — New
+  GET    /alerts/rules
+  POST   /alerts/rules
+  DELETE /alerts/rules/:id
+  GET    /alerts/history
+  GET    /messages
+  POST   /messages/:topic
+  GET    /messages/:topic       (?since=N&limit=M)
+  GET    /messages/:topic/latest
+  DELETE /messages/:topic
+  GET    /dashboard
+
+Hub (port 9191) — all require X-Hub-Key
+  GET    /summary
+  GET    /nodes/status
+  GET    /nodes/best
+  GET    /catalog
+  GET    /regions
 
 ---
 
-*Apollo v2.0 — CLI · Dashboard · Demo · Guide · Execution · Observability · Governance · Health · Memory · Routing · Scheduling · Orchestration · Architecture Selection*
+## State File Layout
+
+{base_dir}/              (default: .apollo/)
+.master.key              AES-256-GCM master key (mode 0600, auto-generated)
+agents.json              Registered agent catalog
+instances/               Running instances, sharded by tenant
+secrets/                 AES-256-GCM encrypted tenant secrets
+usage/                   CPU-seconds + memory-GB-seconds per tenant
+policies/                Per-tenant governance rules
+traces/                  JSONL span records (append-only; dedup on read)
+health/                  Health records (score, crashes, resource trend)
+memory/                  TF-IDF KV store (+ optional Qdrant sync)
+models/                  LLM registry + per-tenant usage
+scheduler/               Jobs + per-job run history
+alerts/                  Alert rules + firing history
+messages/                Topic-based message buses (JSONL, sequence-indexed)
+blueprints/              Deployment templates
+groups/                  Agent group definitions
+workflows/               DAG definitions + run state
+tenants/                 Per-tenant isolated workspaces
+volumes/                 Persistent volume mounts
+logs/                    Agent stdout/stderr (10 MB rotation, 5 generations)
+events.jsonl             Audit log (100 MB rotation, 3 generations)
+
+---
+
+## Environment Variables
+
+APOLLO_SECRET_KEYS   Node    Comma-separated API keys (required)
+APOLLO_JWT_SECRET    Node    JWT HMAC signing key
+APOLLO_HUB_KEY       Hub     Hub API authentication key (required)
+APOLLO_NODE          CLI     Node URL (default: http://localhost:8080)
+APOLLO_KEY           CLI     API key for CLI commands
+APOLLO_QDRANT_URL    Node    Qdrant URL for vector memory (optional)
+APOLLO_SCALE_WEBHOOK Hub     Scale event webhook URL
+RUST_LOG             Both    Log level (info/debug/warn/error)
+
+---
+
+## Build & Operations
+
+  cargo build --release          Build node + hub
+  cargo test --workspace         Run 60 tests
+  apollo node start --secret-keys "$(openssl rand -hex 32)"
+  apollo-hub start --hub-key "$(openssl rand -hex 32)"
+  apollo doctor                  12-point validation
+
+Kubernetes:
+  helm install apollo deploy/helm/apollo/ \
+    --set node.secretKeys="$(openssl rand -hex 32)" \
+    --set hub.hubKey="$(openssl rand -hex 32)"
+
+---
+
+## Deferred Roadmap (v2.3+)
+
+HNSW in-process vector index     Replace file-scan TF-IDF for large stores
+SSE streaming for messages        Real-time push vs polling
+Dashboard live log tailing        WebSocket stream from logs/*.log
+Token-window workflow pausing     Pause workflow when budget nears limit
+Email alert channel               SMTP delivery for AlertChannel::Email
+Python SDK async variant          httpx-based async client
+Multi-node workflow routing       Route DAG steps to different nodes

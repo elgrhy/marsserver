@@ -1,0 +1,141 @@
+# Apollo Hub — Raw Kubernetes Manifests (no Helm)
+#
+# Before applying:
+#   1. kubectl apply -f namespace.yaml
+#   2. kubectl apply -f node-deployment.yaml   (hub connects to the node)
+#   3. Create the hub key secret if not already done:
+#      kubectl create secret generic apollo-hub-credentials \
+#        --namespace apollo \
+#        --from-literal=hub-key="your-hub-key-here"
+#   4. kubectl apply -f hub-deployment.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: apollo-hub
+  namespace: apollo
+  labels:
+    app.kubernetes.io/name: apollo
+    app.kubernetes.io/component: hub
+    app.kubernetes.io/version: "2.2.0"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apollo-hub
+  namespace: apollo
+  labels:
+    app.kubernetes.io/name: apollo
+    app.kubernetes.io/component: hub
+    app.kubernetes.io/version: "2.2.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: apollo
+      app.kubernetes.io/component: hub
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: apollo
+        app.kubernetes.io/component: hub
+        app.kubernetes.io/version: "2.2.0"
+    spec:
+      serviceAccountName: apollo-hub
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: apollo-hub
+          # Replace with your actual image
+          image: ghcr.io/elgrhydev/apollo-hub:2.2.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - apollo-hub
+            - start
+            - --listen
+            - "0.0.0.0:9191"
+            - --scale-threshold
+            - "0.80"
+          ports:
+            - name: http
+              containerPort: 9191
+              protocol: TCP
+          env:
+            - name: APOLLO_HUB_KEY
+              valueFrom:
+                secretKeyRef:
+                  # Uses the node credentials secret if hub key is stored there,
+                  # or change to apollo-hub-credentials if separate.
+                  name: apollo-credentials
+                  key: hub-key
+            # K8s DNS address of the node service
+            - name: APOLLO_NODE_ADDR
+              value: "http://apollo-node.apollo.svc.cluster.local:8080"
+            - name: APOLLO_SCALE_THRESHOLD
+              value: "0.80"
+            - name: RUST_LOG
+              value: "info"
+            - name: RUST_BACKTRACE
+              value: "1"
+          livenessProbe:
+            httpGet:
+              path: /summary
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /summary
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apollo-hub
+  namespace: apollo
+  labels:
+    app.kubernetes.io/name: apollo
+    app.kubernetes.io/component: hub
+    app.kubernetes.io/version: "2.2.0"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: apollo
+    app.kubernetes.io/component: hub
+  ports:
+    - name: http
+      port: 9191
+      targetPort: http
+      protocol: TCP
