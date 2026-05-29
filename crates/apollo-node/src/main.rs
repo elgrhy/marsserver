@@ -1,5 +1,11 @@
 //! APOLLO Node — unified AI agent execution engine  v2.0
 //!
+//! Security properties:
+//! - No default API key. `--secret-keys` / `APOLLO_SECRET_KEYS` must be set.
+//! - JWT `keys` claim must be non-empty and overlap with the node's secret-keys.
+//! - All policy denials are written to the audit log.
+//! - Secrets are AES-256-GCM encrypted at rest.
+//!
 //! Combines the original v1.2 execution, security, metering, and fleet layers
 //! with the v2.0 platform layers:
 //!   • Observability  (/traces)
@@ -13,6 +19,8 @@
 
 use clap::{Parser, Subcommand};
 use anyhow::{Result, anyhow};
+use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 use apollo_runtime::process::{
     ProcessRuntime, save_instance, load_tenant_instances, save_tenant_instances,
     count_active_instances, load_all_instances,
@@ -115,9 +123,9 @@ struct Cli {
     #[arg(long, global = true, default_value = "http://localhost:8080",
           env = "APOLLO_NODE")]
     node: String,
-    /// API key for the node
-    #[arg(long, global = true, default_value = "apollo-dev-secret",
-          env = "APOLLO_KEY")]
+    /// API key for authenticating with the node. Required for all remote commands.
+    /// Set via APOLLO_KEY env var or --key flag.
+    #[arg(long, global = true, env = "APOLLO_KEY", default_value = "")]
     key: String,
     #[command(subcommand)]
     command: Commands,
@@ -369,7 +377,8 @@ impl RateLimiter {
         Self { buckets: Mutex::new(HashMap::new()), rps_limit: rps }
     }
     fn check(&self, key: &str) -> bool {
-        let mut b = self.buckets.lock().unwrap();
+        let mut b = self.buckets.lock()
+            .unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
         let interval = Duration::from_millis(1000 / self.rps_limit as u64);
         if let Some(last) = b.get(key) {
@@ -420,7 +429,9 @@ fn extract_key(headers: &HeaderMap, valid_keys: &[String], jwt_secret: Option<&s
         validation.validate_exp = true;
         if let Ok(data) = decode::<JwtClaims>(bearer, &key, &validation) {
             let claims = data.claims;
-            if claims.keys.is_empty() || claims.keys.iter().any(|k| valid_keys.contains(k)) {
+            // JWT must declare at least one key AND that key must match the node's secret-keys.
+            // An empty `keys` claim is rejected — it would otherwise bypass key validation.
+            if !claims.keys.is_empty() && claims.keys.iter().any(|k| valid_keys.contains(k)) {
                 return Some(format!("jwt:{}", claims.sub));
             }
         }
@@ -432,12 +443,17 @@ fn extract_key(headers: &HeaderMap, valid_keys: &[String], jwt_secret: Option<&s
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Structured logging — level from RUST_LOG, default to info
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_target(false)
+        .init();
+
     if std::env::args().len() == 1 {
-        // Journey-first: interactive landing menu replaces the old line-editor REPL
-        commands::journey::run_landing_menu(
-            "http://localhost:8080".to_string(),
-            "apollo-dev-secret".to_string(),
-        ).await?;
+        // Journey-first: interactive landing menu — reads key from env or prompts
+        let node = std::env::var("APOLLO_NODE").unwrap_or_else(|_| "http://localhost:8080".to_string());
+        let key  = std::env::var("APOLLO_KEY").unwrap_or_default();
+        commands::journey::run_landing_menu(node, key).await?;
         return Ok(());
     }
 
@@ -585,13 +601,11 @@ async fn handle_command_with_flags(node: String, key: String, command: Commands)
     }
 }
 
-// Thin wrapper kept for interactive shell (which doesn't have node/key context easily)
+// Thin wrapper used by the interactive shell — reads node/key from env
 async fn handle_command(command: Commands) -> Result<()> {
-    handle_command_with_flags(
-        "http://localhost:8080".to_string(),
-        "apollo-dev-secret".to_string(),
-        command,
-    ).await
+    let node = std::env::var("APOLLO_NODE").unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let key  = std::env::var("APOLLO_KEY").unwrap_or_default();
+    handle_command_with_flags(node, key, command).await
 }
 
 async fn handle_node(action: NodeAction) -> Result<()> {
@@ -601,27 +615,35 @@ async fn handle_node(action: NodeAction) -> Result<()> {
             tls_cert, tls_key, jwt_secret, webhook_url, webhook_secret, region,
         } => {
             let profile = detect_node_capabilities().await?;
-            let keys: Vec<String> = secret_keys
-                .unwrap_or_else(|| "apollo-dev-secret".to_string())
+
+            let keys_raw = secret_keys.unwrap_or_default();
+            let keys: Vec<String> = keys_raw
                 .split(',')
                 .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
                 .collect();
+            if keys.is_empty() {
+                return Err(anyhow!(
+                    "No secret keys configured.\n\
+                     Set --secret-keys or the APOLLO_SECRET_KEYS environment variable.\n\
+                     Example: apollo node start --secret-keys \"$(openssl rand -hex 32)\""
+                ));
+            }
 
+            let node_id = format!("node-{}", Uuid::new_v4().simple());
             let config = NodeConfig {
-                node_id:     format!("node-{}", now_unix() % 10000),
+                node_id:     node_id.clone(),
                 provider_id: "standalone".to_string(),
                 secret_keys: keys,
                 profile,
                 network: NodeNetworkPolicy {
-                    allow_localhost: false,
-                    allow_private_ranges: false,
                     rate_limit_rps: 100,
                 },
                 region,
                 jwt_secret,
             };
 
-            println!("APOLLO Node '{}' active. Region: {}", config.node_id, config.region);
+            tracing::info!(node_id = %config.node_id, region = %config.region, "APOLLO Node starting");
 
             let runtime      = Arc::new(ProcessRuntime::new(base_dir.clone()));
             let rate_limiter = Arc::new(RateLimiter::new(config.network.rate_limit_rps));
@@ -792,8 +814,12 @@ async fn run_interactive_shell() -> Result<()> {
             continue;
         }
 
+        let parsed_args = match shell_words::split(trimmed) {
+            Ok(a) => a,
+            Err(e) => { println!("Parse error: {}", e); continue; }
+        };
         let mut full_args = vec!["apollo".to_string()];
-        full_args.extend(trimmed.split_whitespace().map(|s| s.to_string()));
+        full_args.extend(parsed_args);
         match Cli::try_parse_from(&full_args) {
             Ok(cli) => {
                 if let Err(e) = handle_command_with_flags(cli.node, cli.key, cli.command).await {
@@ -990,6 +1016,15 @@ async fn handle_agents_run(
 
     match engine.check_run(&body.tenant, &body.agent, &s.config.region, tenant_running) {
         PolicyDecision::Deny { reason, .. } => {
+            log_node_event_at(
+                &s.base_dir, &s.config.node_id, "POLICY", "AGENT_DENIED",
+                &format!("tenant='{}' agent='{}' reason='{}'", body.tenant, body.agent, reason),
+                None,
+            );
+            tracing::warn!(
+                tenant = %body.tenant, agent = %body.agent, %reason,
+                "policy denied agent start"
+            );
             return (StatusCode::FORBIDDEN, err_json(&reason)).into_response();
         }
         PolicyDecision::Allow => {}
@@ -1009,7 +1044,7 @@ async fn handle_agents_run(
         Ok(inst) => {
             let _ = save_instance(&s.base_dir, &inst);
             let _ = record_start(&s.base_dir, &body.tenant);
-            log_node_event(&s.config.node_id, "LIFECYCLE", "AGENT_START",
+            log_node_event_at(&s.base_dir, &s.config.node_id, "LIFECYCLE", "AGENT_START",
                 &format!("Agent '{}' started for tenant '{}'", body.agent, body.tenant),
                 corr_id(&headers));
             if let Some(ref wh) = s.webhook {
@@ -1038,7 +1073,7 @@ async fn handle_agents_stop(
                 list[pos].pid    = None;
                 let _ = save_tenant_instances(&s.base_dir, &body.tenant, &list);
                 let _ = record_stop(&s.base_dir, &body.tenant);
-                log_node_event(&s.config.node_id, "LIFECYCLE", "AGENT_STOP",
+                log_node_event_at(&s.base_dir, &s.config.node_id, "LIFECYCLE", "AGENT_STOP",
                     &format!("Agent '{}' stopped for tenant '{}'", body.agent, body.tenant),
                     corr_id(&headers));
                 if let Some(ref wh) = s.webhook {
@@ -2030,10 +2065,31 @@ fn corr_id(headers: &HeaderMap) -> Option<String> {
 }
 
 fn log_node_event(node_id: &str, category: &str, action: &str, msg: &str, corr: Option<String>) {
+    let level = if category == "POLICY" { "WARN" } else { "INFO" };
+    tracing::info!(node_id, category, action, message = msg, "audit");
+    // log_event uses APOLLO_BASE_DIR env or falls back to .apollo/
     apollo_core::types::log_event(apollo_core::types::ApolloEvent {
         timestamp:      now_unix(),
         node_id:        node_id.to_string(),
-        level:          "INFO".to_string(),
+        level:          level.to_string(),
+        category:       category.to_string(),
+        action:         action.to_string(),
+        message:        msg.to_string(),
+        correlation_id: corr,
+        metadata:       None,
+    });
+}
+
+fn log_node_event_at(
+    base_dir: &Path, node_id: &str, category: &str, action: &str,
+    msg: &str, corr: Option<String>,
+) {
+    let level = if category == "POLICY" { "WARN" } else { "INFO" };
+    tracing::info!(node_id, category, action, message = msg, "audit");
+    apollo_core::types::log_event_to(base_dir, apollo_core::types::ApolloEvent {
+        timestamp:      now_unix(),
+        node_id:        node_id.to_string(),
+        level:          level.to_string(),
         category:       category.to_string(),
         action:         action.to_string(),
         message:        msg.to_string(),

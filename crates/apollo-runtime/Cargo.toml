@@ -12,6 +12,8 @@ sysinfo = "0.30"
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+tracing = { workspace = true }
+
 # Unix-only: process group management
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27", features = ["process", "signal"] }

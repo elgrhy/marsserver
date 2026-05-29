@@ -15,8 +15,6 @@ use std::time::{SystemTime, Duration};
 use std::path::{Path, PathBuf};
 use std::fs::{self, OpenOptions};
 use sysinfo::{System, Pid};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -55,19 +53,26 @@ impl ProcessRuntime {
         self.tenant_workspace_dir(tenant_id, name).join(".apollo.pid")
     }
 
-    /// Deterministic port assignment — no collisions across unlimited tenants
-    /// because the hash is consistent for a given (tenant, agent) pair.
-    fn compute_port(&self, tenant_id: &str, name: &str) -> u16 {
-        let mut hasher = DefaultHasher::new();
-        tenant_id.hash(&mut hasher);
-        name.hash(&mut hasher);
-        10000 + (hasher.finish() % 55535) as u16  // range 10000–65535
+    /// Reserve a free ephemeral port by binding to :0 and reading back the OS-assigned address.
+    /// The listener is closed before the agent is spawned (tiny window, but no collision risk).
+    fn reserve_free_port(&self) -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .ok()
+            .and_then(|l| l.local_addr().ok())
+            .map(|a| a.port())
+            .unwrap_or(0)
     }
 
     fn rotate_logs(&self, log_path: &PathBuf) -> Result<()> {
         if let Ok(meta) = fs::metadata(log_path) {
             if meta.len() > 10 * 1024 * 1024 {
-                let _ = fs::rename(log_path, log_path.with_extension("log.old"));
+                // Keep 5 generations: .log → .log.1 → … → .log.5
+                for n in (1u8..5).rev() {
+                    let from = log_path.with_extension(format!("log.{n}"));
+                    let to   = log_path.with_extension(format!("log.{}", n + 1));
+                    let _ = fs::rename(&from, &to);
+                }
+                let _ = fs::rename(log_path, log_path.with_extension("log.1"));
             }
         }
         Ok(())
@@ -282,7 +287,7 @@ impl AgentRuntime for ProcessRuntime {
     async fn start(&self, tenant_id: &str, spec: &AgentSpec) -> Result<AgentInstance> {
         let workspace   = self.tenant_workspace_dir(tenant_id, &spec.name);
         let code_dir    = self.agent_code_dir(&spec.name);
-        let port        = self.compute_port(tenant_id, &spec.name);
+        let port        = self.reserve_free_port();
         let log_path    = self.tenant_log_file(tenant_id, &spec.name);
         let runtimes_dir = self.runtimes_dir();
         let pid_file    = self.pid_file(tenant_id, &spec.name);
@@ -377,7 +382,9 @@ impl AgentRuntime for ProcessRuntime {
         let mem_limit_mb  = parse_memory_limit(&spec.resources.memory);
         let cpu_limit_pct = spec.resources.cpu * 100.0;
 
-        // Resource enforcement monitor
+        // Resource enforcement monitor — runs until the process exits or is killed
+        let agent_name_mon = spec.name.clone();
+        let tenant_mon     = tenant_id.to_string();
         tokio::spawn(async move {
             let mut sys = System::new_all();
             let mut cpu_strikes = 0u32;
@@ -387,13 +394,24 @@ impl AgentRuntime for ProcessRuntime {
                 match sys.process(Pid::from(pid_val as usize)) {
                     None => break,
                     Some(proc) => {
-                        if proc.memory() / 1024 / 1024 > mem_limit_mb {
+                        let mem_mb = proc.memory() / 1024 / 1024;
+                        if mem_mb > mem_limit_mb {
+                            tracing::warn!(
+                                agent = %agent_name_mon, tenant = %tenant_mon,
+                                pid = pid_val, mem_mb, limit_mb = mem_limit_mb,
+                                "OOM: killing agent — memory limit exceeded"
+                            );
                             kill_group(pid_val, true);
                             break;
                         }
                         if proc.cpu_usage() > cpu_limit_pct {
                             cpu_strikes += 1;
                             if cpu_strikes >= 3 {
+                                tracing::warn!(
+                                    agent = %agent_name_mon, tenant = %tenant_mon,
+                                    pid = pid_val, cpu = proc.cpu_usage(), limit = cpu_limit_pct,
+                                    "CPU: killing agent — sustained CPU limit exceeded"
+                                );
                                 kill_group(pid_val, true);
                                 break;
                             }

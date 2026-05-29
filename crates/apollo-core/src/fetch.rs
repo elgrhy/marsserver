@@ -1,6 +1,12 @@
 //! Remote agent source resolution — URLs, git repos, archives, local paths.
+//!
+//! Security properties maintained:
+//! - Git URLs are validated to reject flag injection (e.g. `--upload-pack`).
+//! - Extracted archives are checked to ensure no entry escapes the staging dir.
+//! - Downloads can optionally require a SHA-256 digest match.
 
 use anyhow::{anyhow, Context, Result};
+use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
@@ -43,12 +49,18 @@ fn looks_like_git_url(url: &str) -> bool {
 }
 
 /// Download and extract an archive. Returns the directory containing `agent.yaml`.
-async fn fetch_archive(url: &str, staging_dir: &Path) -> Result<PathBuf> {
-    println!("[FETCH] Downloading agent from {}", url);
+/// If `expected_sha256` is provided, the download is rejected if the digest does not match.
+pub async fn fetch_archive_with_checksum(
+    url: &str,
+    staging_dir: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<PathBuf> {
+    tracing::info!(url, "downloading agent archive");
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
-        .build()?;
+        .build()
+        .context("failed to build HTTP client")?;
 
     let response = client
         .get(url)
@@ -60,17 +72,39 @@ async fn fetch_archive(url: &str, staging_dir: &Path) -> Result<PathBuf> {
         return Err(anyhow!("HTTP {} downloading {}", response.status(), url));
     }
 
-    let filename = url
+    let bytes = response.bytes().await.context("Failed to read response body")?;
+
+    // Verify SHA-256 if caller supplied an expected digest
+    if let Some(expected) = expected_sha256 {
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual = hex::encode(hasher.finalize());
+        if actual != expected.to_lowercase() {
+            return Err(anyhow!(
+                "SHA-256 mismatch for {}: expected {}, got {}",
+                url, expected, actual
+            ));
+        }
+        tracing::info!("archive checksum verified");
+    }
+
+    // Derive a safe filename — strip query string, reject path traversal
+    let raw_name = url
         .split('/')
         .last()
         .and_then(|s| s.split('?').next())
         .unwrap_or("agent.download");
+    let filename = raw_name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect::<String>();
+    if filename.is_empty() || filename == "." || filename == ".." {
+        return Err(anyhow!("Could not derive a safe filename from URL: {}", url));
+    }
 
-    let download_path = staging_dir.join(filename);
-    let bytes = response.bytes().await.context("Failed to read response body")?;
+    let download_path = staging_dir.join(&filename);
     fs::write(&download_path, &bytes)?;
-
-    println!("[FETCH] Downloaded {} bytes to {:?}", bytes.len(), download_path);
+    tracing::debug!(bytes = bytes.len(), path = ?download_path, "archive saved");
 
     let extract_dir = staging_dir.join("unpacked");
     fs::create_dir_all(&extract_dir)?;
@@ -81,20 +115,57 @@ async fn fetch_archive(url: &str, staging_dir: &Path) -> Result<PathBuf> {
     } else if lower.ends_with(".zip") {
         extract_zip(&download_path, &extract_dir)?;
     } else {
-        // Might be a bare directory listing or a single script — treat the staging dir itself.
-        fs::copy(&download_path, extract_dir.join(filename))?;
+        fs::copy(&download_path, extract_dir.join(&filename))?;
     }
 
-    find_agent_yaml_dir(&extract_dir)
+    // Validate that the discovered agent.yaml is inside the extract_dir (symlink escape guard)
+    let canonical_extract = fs::canonicalize(&extract_dir)
+        .unwrap_or_else(|_| extract_dir.clone());
+    let agent_dir = find_agent_yaml_dir(&extract_dir)?;
+    let canonical_agent = fs::canonicalize(&agent_dir)
+        .unwrap_or_else(|_| agent_dir.clone());
+    if !canonical_agent.starts_with(&canonical_extract) {
+        return Err(anyhow!(
+            "Security: agent.yaml resolved outside staging directory — archive may contain symlinks"
+        ));
+    }
+
+    Ok(agent_dir)
+}
+
+/// Download and extract an archive (no checksum — for internal use).
+async fn fetch_archive(url: &str, staging_dir: &Path) -> Result<PathBuf> {
+    fetch_archive_with_checksum(url, staging_dir, None).await
+}
+
+/// Reject git URLs that contain flag-injection patterns.
+fn validate_git_url(url: &str) -> Result<()> {
+    // Reject anything that looks like a git flag or shell metacharacter sequence
+    for banned in &["--upload-pack", "--exec", "--no-local", "; ", "&", "|", "`", "$"] {
+        if url.contains(banned) {
+            return Err(anyhow!("Rejected git URL with unsafe token '{}'", banned));
+        }
+    }
+    // Must start with https://, http://, git@, or ssh://
+    if !url.starts_with("https://")
+        && !url.starts_with("http://")
+        && !url.starts_with("git@")
+        && !url.starts_with("ssh://")
+    {
+        return Err(anyhow!("Git URL must use https://, http://, git@, or ssh:// scheme"));
+    }
+    Ok(())
 }
 
 /// Clone a git repository and return the directory containing `agent.yaml`.
 async fn git_clone(url: &str, staging_dir: &Path) -> Result<PathBuf> {
-    println!("[FETCH] Cloning {}", url);
+    validate_git_url(url)?;
+    tracing::info!(url, "cloning agent repository");
 
     let clone_dir = staging_dir.join("repo");
+    let clone_str = clone_dir.to_str().context("clone path is not valid UTF-8")?;
     let output = tokio::process::Command::new("git")
-        .args(["clone", "--depth", "1", url, clone_dir.to_str().unwrap_or("repo")])
+        .args(["clone", "--depth", "1", "--", url, clone_str])
         .output()
         .await
         .context("git not found — install git 2.30+")?;

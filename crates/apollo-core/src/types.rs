@@ -21,9 +21,7 @@ fn default_region() -> String { "default".to_string() }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct NodeNetworkPolicy {
-    pub allow_localhost:      bool,
-    pub allow_private_ranges: bool,
-    pub rate_limit_rps:       u32,
+    pub rate_limit_rps: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -170,6 +168,9 @@ pub struct RuntimeInstallConfig {
     pub windows: Option<String>,
     /// Fallback: a cross-platform install script path (run via shell/bash).
     pub script:  Option<String>,
+    /// Expected SHA-256 hex digest of the downloaded archive.
+    /// When set, the download is rejected if the digest does not match.
+    pub sha256:  Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -213,18 +214,38 @@ pub struct ApolloEvent {
     pub metadata:       Option<HashMap<String, String>>,
 }
 
-pub fn log_event(event: ApolloEvent) {
-    let log_path = std::path::PathBuf::from(".apollo/events.jsonl");
+/// Append an event to `{base_dir}/events.jsonl`, rotating at 100 MB.
+/// Keeps up to 3 generations: events.jsonl → events.jsonl.1 → events.jsonl.2
+pub fn log_event_to(base_dir: &std::path::Path, event: ApolloEvent) {
+    let log_path = base_dir.join("events.jsonl");
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
+    }
+    // Rotate if the file exceeds 100 MB
+    if let Ok(meta) = std::fs::metadata(&log_path) {
+        if meta.len() > 100 * 1024 * 1024 {
+            for gen in (1u8..3).rev() {
+                let from = base_dir.join(format!("events.jsonl.{}", gen));
+                let to   = base_dir.join(format!("events.jsonl.{}", gen + 1));
+                let _ = std::fs::rename(&from, &to);
+            }
+            let _ = std::fs::rename(&log_path, base_dir.join("events.jsonl.1"));
+        }
     }
     if let Ok(json) = serde_json::to_string(&event) {
         use std::io::Write;
         if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true).append(true).open(log_path)
+            .create(true).append(true).open(&log_path)
         {
             let _ = writeln!(file, "{}", json);
         }
     }
-    println!("[{}] {} | {} | {}", event.level, event.category, event.action, event.message);
+}
+
+/// Convenience wrapper — resolves base_dir from `APOLLO_BASE_DIR` env var or `.apollo/`.
+pub fn log_event(event: ApolloEvent) {
+    let base_dir = std::env::var("APOLLO_BASE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from(".apollo"));
+    log_event_to(&base_dir, event);
 }

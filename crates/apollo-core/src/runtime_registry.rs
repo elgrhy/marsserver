@@ -7,6 +7,7 @@
 
 use crate::types::{AgentRuntimeConfig, RuntimeInstallConfig};
 use anyhow::{anyhow, Context, Result};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -64,13 +65,10 @@ fn native_binary(entry_str: &str) -> Result<(String, Vec<String>)> {
 fn parse_template(template: &str, entry_path: &Path) -> Result<(String, Vec<String>)> {
     let entry_str = entry_path.to_string_lossy();
     let expanded = template.replace("{entry}", &entry_str);
-    let parts: Vec<String> = shell_words(expanded.trim());
-    if parts.is_empty() {
-        return Err(anyhow!("Empty command template in agent.yaml"));
-    }
-    let mut it = parts.into_iter();
-    let binary = it.next().unwrap();
-    Ok((binary, it.collect()))
+    let mut parts = shell_words(expanded.trim()).into_iter();
+    let binary = parts.next()
+        .ok_or_else(|| anyhow!("Empty command template in agent.yaml"))?;
+    Ok((binary, parts.collect()))
 }
 
 /// Naive shell word splitter that respects quoted strings.
@@ -169,8 +167,8 @@ pub async fn ensure_runtime(runtime: &AgentRuntimeConfig, runtimes_dir: &Path) -
     // Attempt auto-install from agent.yaml's install config
     if let Some(install) = &runtime.install {
         if let Some(url) = platform_install_url(install) {
-            println!("[RUNTIME] '{}' not found — auto-installing from {}", kind, url);
-            install_runtime_binary(kind, url, runtimes_dir).await?;
+            tracing::info!(kind, url, "runtime not found — auto-installing");
+            install_runtime_binary(kind, url, runtimes_dir, install.sha256.as_deref()).await?;
             return Ok(());
         }
     }
@@ -207,21 +205,31 @@ fn platform_install_url(install: &RuntimeInstallConfig) -> Option<&str> {
 }
 
 /// Download a runtime binary to `runtimes_dir/{kind}/` and make it executable.
-async fn install_runtime_binary(kind: &str, url: &str, runtimes_dir: &Path) -> Result<()> {
+/// `expected_sha256` is the hex digest declared in `agent.yaml`; when set, the
+/// download is rejected if the digest does not match (supply-chain protection).
+async fn install_runtime_binary(
+    kind: &str,
+    url: &str,
+    runtimes_dir: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<()> {
     let dest_dir = runtimes_dir.join(kind);
     fs::create_dir_all(&dest_dir)?;
 
-    let filename = url
-        .split('/')
-        .last()
-        .and_then(|s| s.split('?').next())
-        .unwrap_or(kind);
+    // Safe filename: strip query string and replace unsafe chars
+    let raw_name = url.split('/').last().and_then(|s| s.split('?').next()).unwrap_or(kind);
+    let filename: String = raw_name.chars()
+        .map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    let filename = if filename.is_empty() { kind.to_string() } else { filename };
+    let dest_path = dest_dir.join(&filename);
 
-    let dest_path = dest_dir.join(filename);
+    tracing::info!(kind, url, "auto-installing runtime");
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(600))
-        .build()?;
+        .build()
+        .context("build HTTP client")?;
 
     let response = client
         .get(url)
@@ -234,6 +242,25 @@ async fn install_runtime_binary(kind: &str, url: &str, runtimes_dir: &Path) -> R
     }
 
     let bytes = response.bytes().await?;
+
+    // Verify SHA-256 digest if declared in agent.yaml
+    if let Some(expected) = expected_sha256 {
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual = hex::encode(hasher.finalize());
+        if actual != expected.to_lowercase() {
+            return Err(anyhow!(
+                "SHA-256 mismatch for runtime '{}': expected {}, got {}",
+                kind, expected, actual
+            ));
+        }
+        tracing::info!(kind, "runtime checksum verified");
+    } else {
+        tracing::warn!(
+            kind,
+            "no sha256 declared in agent.yaml install block — skipping integrity check"
+        );
+    }
 
     // Handle archives
     let lower = filename.to_lowercase();
@@ -261,7 +288,7 @@ async fn install_runtime_binary(kind: &str, url: &str, runtimes_dir: &Path) -> R
         }
     }
 
-    println!("[RUNTIME] Installed '{}' to {:?}", kind, dest_dir);
+    tracing::info!(kind, dest = ?dest_dir, "runtime installed");
     Ok(())
 }
 

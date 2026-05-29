@@ -123,7 +123,8 @@ pub fn append_span(base_dir: &Path, span: &TraceSpan) -> Result<()> {
     Ok(())
 }
 
-/// Load all spans for a trace.
+/// Load all spans for a trace, deduplicating by span_id (last occurrence wins).
+/// This is append-friendly: concurrent writers append and readers deduplicate.
 pub fn load_trace(
     base_dir: &Path,
     tenant_id: &str,
@@ -133,41 +134,26 @@ pub fn load_trace(
     let path = trace_file(base_dir, tenant_id, agent_id, trace_id);
     if !path.exists() { return vec![]; }
     let content = fs::read_to_string(&path).unwrap_or_default();
-    content.lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
+    // Use an IndexMap-like approach: last entry per span_id wins
+    let mut by_id: std::collections::HashMap<String, TraceSpan> =
+        std::collections::HashMap::new();
+    for line in content.lines() {
+        if let Ok(span) = serde_json::from_str::<TraceSpan>(line) {
+            by_id.insert(span.span_id.clone(), span);
+        }
+    }
+    let mut spans: Vec<TraceSpan> = by_id.into_values().collect();
+    spans.sort_by_key(|s| s.start_ts_ms);
+    spans
 }
 
-/// Upsert a span (by span_id) in the trace file.
-/// Used when closing a span (adding end_ts, status, token_usage).
+/// Record a span update by appending to the JSONL file.
+///
+/// We use append-only writes to avoid read-modify-rewrite races when multiple
+/// agents POST spans for the same trace concurrently. `load_trace` deduplicates
+/// by `span_id`, keeping the latest entry (last-writer-wins per span).
 pub fn upsert_span(base_dir: &Path, span: &TraceSpan) -> Result<()> {
-    let path = trace_file(base_dir, &span.tenant_id, &span.agent_id, &span.trace_id);
-
-    if !path.exists() {
-        return append_span(base_dir, span);
-    }
-
-    // Read all existing spans, update the matching one, rewrite
-    let content = fs::read_to_string(&path)?;
-    let mut spans: Vec<TraceSpan> = content.lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
-
-    if let Some(pos) = spans.iter().position(|s| s.span_id == span.span_id) {
-        spans[pos] = span.clone();
-    } else {
-        spans.push(span.clone());
-    }
-
-    let dir = trace_dir(base_dir, &span.tenant_id, &span.agent_id);
-    fs::create_dir_all(&dir)?;
-    let mut file = fs::OpenOptions::new()
-        .write(true).create(true).truncate(true)
-        .open(&path)?;
-    for s in &spans {
-        writeln!(file, "{}", serde_json::to_string(s)?)?;
-    }
-    Ok(())
+    append_span(base_dir, span)
 }
 
 /// List trace summaries for a tenant+agent (reads _index.jsonl).

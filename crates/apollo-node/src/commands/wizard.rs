@@ -3,7 +3,7 @@
 //! All `dialoguer` calls live here — no async, no tokio.
 //! Called from journey.rs via `tokio::task::block_in_place`.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use colored::Colorize;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use std::path::PathBuf;
@@ -67,22 +67,33 @@ pub fn prompt_init() -> Result<InitResult> {
 
     println!();
     println!("  {}", "API key — used by the CLI and SDK to authenticate with the node.".dimmed());
-    let key: String = Input::with_theme(&t())
+    println!("  {}", "Leave blank to auto-generate a cryptographically secure key.".dimmed());
+    let key_input: String = Input::with_theme(&t())
         .with_prompt("  Secret key")
-        .default("apollo-dev-secret".into())
-        .show_default(true)
+        .allow_empty(true)
         .interact_text()?;
 
-    if key == "apollo-dev-secret" {
-        fmt::warn_hint("Using the default key is fine for development. Use a strong random key for production.");
-    }
+    let key = if key_input.trim().is_empty() {
+        // Generate a 32-byte (256-bit) random hex key
+        let bytes: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
+        let generated = hex::encode(&bytes);
+        println!("  {}", format!("Generated key: {}", generated).green());
+        println!("  {}", "Save this key — you'll need it for --key / APOLLO_KEY.".yellow());
+        generated
+    } else {
+        if key_input.len() < 16 {
+            fmt::warn_hint("Key is shorter than 16 characters — use a longer, random value for production.");
+        }
+        key_input
+    };
 
     let port_str: String = Input::with_theme(&t())
         .with_prompt("  HTTP port")
         .default("8080".into())
         .show_default(true)
         .interact_text()?;
-    let port = port_str.parse::<u16>().unwrap_or(8080);
+    let port = port_str.parse::<u16>()
+        .map_err(|_| anyhow!("'{}' is not a valid port number (1–65535)", port_str))?;
 
     let region: String = Input::with_theme(&t())
         .with_prompt("  Region tag  (optional, e.g. us-east-1)")
