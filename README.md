@@ -1,11 +1,51 @@
-# APOLLO v2.0
+# APOLLO v2.1
 
 **Production-grade distributed infrastructure runtime for autonomous AI agents.**
 
 Apollo is a self-hosted execution engine and fleet coordination layer that gives infrastructure providers, IT teams, and SaaS platforms a secure, observable, governance-aware foundation for running agent workloads at scale. Deploy once, operate indefinitely — no developer involvement required.
 
-**Status:** Production Certified — v2.0  
+**Status:** Production Certified — v2.1  
 **Tests:** 60/60 unit tests passing · 0 warnings · Zero external ML dependencies
+
+---
+
+## What's New in v2.1 — Full Production Hardening
+
+v2.1 is a security, reliability, and observability release. Every issue identified in the production audit has been resolved.
+
+### Security (Phase 1)
+
+| Fix | Detail |
+|-----|--------|
+| **No default API keys** | Node refuses to start without `--secret-keys` / `APOLLO_SECRET_KEYS`. No hardcoded fallbacks anywhere. |
+| **Hub authentication** | All hub routes (`/summary`, `/catalog`, etc.) require `X-Hub-Key` or `Authorization: Bearer`. Hub refuses to start without `--hub-key` / `APOLLO_HUB_KEY`. |
+| **JWT bypass closed** | JWT `keys` claim must be non-empty and match a node secret-key. Empty claim is rejected (was silently accepted). |
+| **Git injection blocked** | `--upload-pack`, shell metacharacters, and non-standard schemes rejected before `git clone`. |
+| **Dead network policy removed** | `allow_localhost`/`allow_private_ranges` fields removed — they were configured but never enforced. |
+
+### Reliability (Phase 2)
+
+| Fix | Detail |
+|-----|--------|
+| **Trace race condition** | `POST /traces/.../spans` is now append-only. `load_trace` deduplicates by `span_id` on read. Concurrent agents can safely write the same trace. |
+| **Lock poison safety** | All `Mutex::lock().unwrap()` replaced with `.unwrap_or_else(\|p\| p.into_inner())` — no more node crash on thread panic. |
+| **Unique node IDs** | Node IDs now use UUID v4 (`node-<uuid>`). Previous time-modulo IDs could collide. |
+| **Hub graceful shutdown** | `CancellationToken` stops the background poller cleanly on Ctrl-C / SIGTERM. |
+| **Port collision fixed** | Agent ports assigned by OS via `TcpListener::bind(":0")`. Previous hash-based assignment had a ~50% collision rate at 280 agents. |
+| **Archive path guard** | Extracted archives are canonicalized and verified to stay inside the staging directory (symlink escape protection). |
+
+### Observability (Phase 3)
+
+| Fix | Detail |
+|-----|--------|
+| **Structured logging** | `tracing` + `tracing-subscriber` integrated. Set `RUST_LOG=debug/info/warn` to control level. |
+| **Policy denial audit** | Every `403 Forbidden` from the policy engine is now written to `events.jsonl` with WARN level and tenant/agent/reason. |
+| **Runtime checksum** | `sha256` field added to `agent.yaml` install block. Mismatched digest aborts install. Missing digest logs a warning. |
+| **Event log rotation** | `events.jsonl` rotates at 100 MB, retains 3 generations. |
+| **Shell arg quoting** | Interactive shell uses `shell-words` crate — paths with spaces now parse correctly. |
+| **Secrets encrypted at rest** | AES-256-GCM encryption for all tenant secret files. Master key auto-generated at `{base_dir}/.master.key` (mode 0600). Legacy plaintext files auto-migrated on first write. |
+| **Log rotation (5 gen)** | Agent logs keep 5 generations (`.log.1`–`.log.5`), not just one `.log.old`. |
+| **Resource kill logging** | OOM and CPU-limit kills logged via structured trace with pid, tenant, agent, and reason. |
 
 ---
 
@@ -145,7 +185,7 @@ $ apollo doctor
 [OK] Orchestration APIs Active
 [OK] Architecture Selector Active
 [OK] Runtimes Detected: python3, node, rustc, deno, ruby, ...
-STATUS: PRODUCTION READY  [Apollo v2.0]
+STATUS: PRODUCTION READY  [Apollo v2.1]
 ```
 
 ---
@@ -184,7 +224,7 @@ apollo [--node URL] [--key KEY] <command>
 Global flags apply to all v2.0 commands:
 ```
 --node   http://localhost:8080   (env: APOLLO_NODE)
---key    apollo-dev-secret       (env: APOLLO_KEY)
+--key    <your-key>              (env: APOLLO_KEY)   # no default — must be set
 ```
 
 **Run offline with no node:**
@@ -223,8 +263,9 @@ apollo node start \
   --webhook-url https://control.example.com/apollo-events \
   --region us-east-1
 
-# Start the hub
+# Start the hub (hub-key required)
 apollo-hub start \
+  --hub-key "$(openssl rand -hex 32)" \
   --webhook-url https://control.example.com/apollo-scale \
   --scale-threshold 0.80
 
@@ -375,7 +416,7 @@ curl -X POST http://localhost:8080/architecture/classify \
   -d '{"tenant_id":"user_1","tool_count":4,"parallel_branches":2,"error_tolerance":2,"governance_strict":false}'
 ```
 
-### Hub API (`:9191`) — Internal Network Only
+### Hub API (`:9191`) — All routes require `X-Hub-Key` or `Authorization: Bearer`
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -393,9 +434,10 @@ All state lives under `base_dir` (default `.apollo/`):
 
 | Path | Contents |
 |------|----------|
+| `.master.key` | AES-256-GCM master key for secrets encryption (mode 0600, auto-generated) |
 | `agents.json` | Registered agent catalog |
 | `instances/{tenant_id}.json` | Running instances (sharded by tenant) |
-| `secrets/{tenant_id}.json` | Per-tenant secrets (mode 0600) |
+| `secrets/{tenant_id}.json` | Per-tenant secrets (AES-256-GCM encrypted, mode 0600) |
 | `usage/{tenant_id}.json` | CPU-seconds, memory-GB-seconds, starts/stops |
 | `policies/{tenant_id}.json` | Per-tenant governance policy |
 | `traces/{tenant}/{agent}/{trace_id}.jsonl` | Span records (one JSON per line) |
@@ -413,8 +455,8 @@ All state lives under `base_dir` (default `.apollo/`):
 | `agents/{name}.v{ver}/` | Version backup for rollback |
 | `tenants/{id}/{name}/` | Per-tenant isolated workspace |
 | `volumes/{id}/{name}/{vol}/` | Persistent volume mounts |
-| `logs/{id}/{name}.log` | Agent stdout/stderr (rotated at 10 MB) |
-| `events.jsonl` | Append-only audit log |
+| `logs/{id}/{name}.log` | Agent stdout/stderr (rotated at 10 MB, 5 generations) |
+| `events.jsonl` | Append-only audit log (rotated at 100 MB, 3 generations) |
 
 ---
 
@@ -422,16 +464,22 @@ All state lives under `base_dir` (default `.apollo/`):
 
 | Control | Enforcement |
 |---------|-------------|
-| API authentication | `X-Apollo-Key` (multi-key rotation) OR `Authorization: Bearer` HS256-JWT |
-| JWT scoping | `keys` claim issues constrained tokens per sub-operator |
+| **No default keys** | Node and hub refuse to start without explicit secret keys — no hardcoded fallbacks |
+| API authentication (node) | `X-Apollo-Key` (multi-key rotation) OR `Authorization: Bearer` HS256-JWT |
+| API authentication (hub) | `X-Hub-Key` OR `Authorization: Bearer` — all hub routes protected |
+| JWT scoping | `keys` claim must be non-empty and match a node secret-key; empty claim rejected |
 | Rate limiting | Per-key token bucket 100 RPS; `429` on breach |
 | TLS | `rustls` via `axum-server`; native — no reverse proxy needed |
-| Secrets protection | Mode `0600`; loaded only at spawn; never in API responses or logs |
+| **Secrets encrypted at rest** | AES-256-GCM; master key at `{base_dir}/.master.key` (mode 0600, auto-generated) |
 | Env scrubbing | `cmd.env_clear()` before spawn; only Apollo vars + tenant secrets + safe PATH |
 | Process containment | Unix: `setpgid`/`killpg`; Windows: `CREATE_NEW_PROCESS_GROUP`/`taskkill /F /T` |
 | FS isolation | `harden_path()` canonicalises + `starts_with(root)` before exec |
+| Archive safety | Extracted archives verified to stay inside staging dir (symlink escape guard) |
+| Git URL safety | `--upload-pack`, shell metacharacters, and non-http/ssh schemes rejected |
+| **Runtime integrity** | `sha256` checksum verified on every auto-installed runtime binary |
 | Governance | `PolicyEngine::check_run()` before every agent start — returns 403 on deny |
-| Audit trail | Append-only `events.jsonl` for all starts, stops, recoveries |
+| **Policy audit** | Every denied start written to `events.jsonl` with WARN level + reason |
+| Audit trail | Append-only `events.jsonl`, rotates at 100 MB, 3 generations retained |
 | Webhook integrity | HMAC-SHA256 `X-Apollo-Signature` on every outbound event |
 
 ---
@@ -448,6 +496,7 @@ runtime:
   install:
     linux:   https://example.com/runtime-linux
     macos:   https://example.com/runtime-macos
+    sha256:  "abc123..."    # optional but recommended — digest verified before install
 llm:
   required: true
   provider: any
